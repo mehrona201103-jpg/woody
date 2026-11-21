@@ -1,0 +1,181 @@
+"""Woody Core: объединяет личность, память, эмоции, права и AI Router. AI — лишь инструмент."""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from backend.actions import files as files_action
+from backend.actions import messages as messages_action
+from backend.core.ai_router import AIRouter, AIUnavailable
+from backend.core.emotion import EmotionState, PARAMS, detect_events
+from backend.core.identity import IdentityService
+from backend.core.learning import LearningService
+from backend.core.memory import MemoryService
+from backend.core.personality import build_system_prompt
+from backend.database.models import Emotion, User
+from backend.permissions.confirmation import parse_confirmation
+from backend.permissions.manager import PermissionManager
+
+logger = logging.getLogger("woody.brain")
+
+
+@dataclass
+class PendingAction:
+    kind: str  # "message" | "delete_file"
+    permission: str
+    prompt: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    strict_phrase: str | None = None
+
+
+# Ожидающие подтверждения действия по user.id (один процесс; для MVP достаточно).
+PENDING: dict[int, PendingAction] = {}
+
+
+def load_emotion(session: Session, user_id: int) -> EmotionState:
+    row = session.scalars(select(Emotion).where(Emotion.user_id == user_id).order_by(Emotion.id.desc())).first()
+    state = EmotionState()
+    if row:
+        state.values = {p: float(getattr(row, p)) for p in PARAMS}
+    return state
+
+
+def save_emotion(session: Session, user_id: int, state: EmotionState) -> None:
+    session.add(Emotion(user_id=user_id, **{p: state.values[p] for p in PARAMS}))
+    session.commit()
+
+
+class Brain:
+    def __init__(self, session: Session, router: AIRouter) -> None:
+        self.session = session
+        self.router = router
+        self.memory = MemoryService(session)
+        self.learning = LearningService(session)
+        self.identity = IdentityService(session)
+        self.permissions: PermissionManager  # создаётся в handle() для конкретного пользователя
+
+    def _result(self, reply: str, emotion: EmotionState, **extra: Any) -> dict[str, Any]:
+        face = extra.pop("face", emotion.face_state())
+        state = emotion.state("speaking")
+        state["emotion"] = face
+        return {
+            "reply": reply,
+            "face": face,
+            "state": state,
+            "emotion": emotion.snapshot(),
+            "voice": emotion.voice_style(),
+            **extra,
+        }
+
+    async def handle(self, user: User, text: str) -> dict[str, Any]:
+        self.permissions = PermissionManager(self.session, user.id)
+        emotion = load_emotion(self.session, user.id)
+        self.memory.add_message(user.id, "USER", text)
+
+        pending = PENDING.get(user.id)
+        if pending:
+            reply = self._resolve_pending(user, pending, text, emotion)
+            if reply is not None:
+                self.memory.add_message(user.id, "WOODY", reply)
+                save_emotion(self.session, user.id, emotion)
+                return self._result(reply, emotion)
+
+        action_reply = self._detect_action(user, text)
+        if action_reply is not None:
+            self.memory.add_message(user.id, "WOODY", action_reply)
+            return self._result(action_reply, emotion, awaiting_confirmation=user.id in PENDING)
+
+        for event in detect_events(text):
+            emotion.apply(event)
+        self.memory.learn_from_text(user.id, text)
+
+        system = build_system_prompt(
+            user.name,
+            emotion,
+            self.memory.context_lines(user.id),
+            self.learning.context_lines(user.id),
+            persona=self.identity.personality(),
+        )
+        history = [
+            {"role": "user" if m.role == "USER" else "assistant", "content": m.text}
+            for m in self.memory.recent_messages(user.id, 10)
+        ]
+        if not history or history[-1]["content"] != text:
+            history.append({"role": "user", "content": text})
+
+        try:
+            reply, provider = await self.router.complete([{"role": "system", "content": system}, *history])
+            emotion.apply("helped_user")
+            emotion.apply("task_success")
+        except AIUnavailable as exc:
+            logger.error("AI недоступен: %s", exc)
+            emotion.apply("task_failure")
+            emotion.decay()
+            save_emotion(self.session, user.id, emotion)
+            msg = f"{user.name}, сейчас я не могу связаться с AI-моделью. Попробуй позже или проверь настройки провайдеров."
+            return self._result(msg, emotion, face="confused", error="ai_unavailable")
+
+        emotion.decay(0.05)
+        save_emotion(self.session, user.id, emotion)
+        self.memory.add_message(user.id, "WOODY", reply)
+        return self._result(reply, emotion, provider=provider)
+
+    # --- действия -----------------------------------------------------------------
+
+    def _detect_action(self, user: User, text: str) -> str | None:
+        low = text.lower()
+        draft = messages_action.parse_draft_request(text)
+        if draft:
+            if self.permissions.status("messages.send") == "denied":
+                return "Отправка сообщений для меня запрещена в настройках разрешений."
+            PENDING[user.id] = PendingAction(
+                "message", "messages.send", "", {"recipient": draft.recipient, "text": draft.text}
+            )
+            return f"Я подготовил сообщение для «{draft.recipient}»: «{draft.text}» Отправить?"
+
+        if "удали файл" in low:
+            name = low.split("удали файл", 1)[1].strip(" .,!?\"'«»")
+            if self.permissions.status("files.delete") == "denied":
+                return "Удаление файлов для меня запрещено в настройках разрешений."
+            found = files_action.find_file(name) if name else None
+            if not found:
+                return "Я не нашёл такой файл в разрешённой папке."
+            phrase = "подтверждаю удаление"
+            PENDING[user.id] = PendingAction("delete_file", "files.delete", "", {"path": str(found)}, phrase)
+            return f"Я нашёл файл «{found.name}». Чтобы удалить его, скажи: «{phrase}»."
+        return None
+
+    def _resolve_pending(self, user: User, pending: PendingAction, text: str, emotion: EmotionState) -> str | None:
+        answer = parse_confirmation(text, pending.strict_phrase)
+        if answer == "unclear":
+            if pending.strict_phrase:
+                return f"Для этого действия нужна точная фраза: «{pending.strict_phrase}». Или скажи «отмена»."
+            return None  # не ответ на вопрос — обычный диалог, подтверждение остаётся в силе
+        del PENDING[user.id]
+        if answer == "no":
+            return "Хорошо, отменил."
+        if self.permissions.check(pending.permission) == "denied":
+            return "Это действие запрещено в настройках разрешений."
+
+        if pending.kind == "message":
+            ok, info = messages_action.send_message(
+                messages_action.MessageDraft(pending.payload["recipient"], pending.payload["text"])
+            )
+            emotion.apply("task_success" if ok else "task_failure")
+            self.learning.log_experience("Отправка сообщения", "success" if ok else "not_implemented")
+            return info
+        if pending.kind == "delete_file":
+            try:
+                files_action.delete_file(Path(pending.payload["path"]))
+            except (OSError, PermissionError) as exc:
+                logger.error("Удаление не удалось: %s", exc)
+                emotion.apply("task_failure")
+                return "Не получилось удалить файл."
+            emotion.apply("task_success")
+            return "Файл удалён."
+        return "Неизвестное действие."

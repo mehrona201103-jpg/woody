@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#050b1e">
+  <title>Woody</title>
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <main id="app">
+    <header class="topbar">
+      <div class="indicators">
+        <span id="status-label" class="status">&nbsp;</span>
+        <span id="cam-badge" class="badge hidden">● CAMERA ON</span>
+        <span id="mic-badge" class="badge hidden">● MIC ON</span>
+      </div>
+      <div class="top-actions">
+        <button id="btn-gesture" class="icon-btn" aria-label="Жесты (камера)" title="Жесты">✋</button>
+        <button id="btn-settings" class="icon-btn" aria-label="Настройки">⚙</button>
+      </div>
+    </header>
+
+    <div id="banner" class="banner hidden" role="alert">
+      <span id="banner-text">Не удалось подключиться к Woody.</span>
+      <button id="banner-retry" class="ghost">Повторить</button>
+    </div>
+
+    <section class="stage">
+      <div id="cam-wrap" class="cam-wrap hidden">
+        <video id="cam-video" playsinline muted autoplay></video>
+        <span id="cam-gesture" class="cam-gesture"></span>
+      </div>
+      <svg id="face" viewBox="0 0 400 300" role="img" aria-label="Лицо Woody">
+        <defs>
+          <clipPath id="clip-l"><ellipse rx="42" ry="46"/></clipPath>
+          <clipPath id="clip-r"><ellipse rx="42" ry="46"/></clipPath>
+        </defs>
+        <g id="eye-l" transform="translate(120 110)"><ellipse class="eye-white" rx="42" ry="46"/><circle class="pupil" r="17"/><path class="lid" clip-path="url(#clip-l)" d="M-48 -52 L48 -52 L48 -52 L-48 -52 Z"/></g>
+        <g id="eye-r" transform="translate(280 110)"><ellipse class="eye-white" rx="42" ry="46"/><circle class="pupil" r="17"/><path class="lid" clip-path="url(#clip-r)" d="M-48 -52 L48 -52 L48 -52 L-48 -52 Z"/></g>
+        <path id="brow-l" class="brow" d="M80 50 Q120 40 160 50"/>
+        <path id="brow-r" class="brow" d="M240 50 Q280 40 320 50"/>
+        <path id="mouth" class="mouth" d="M150 224 Q200 232 250 224"/>
+      </svg>
+      <div id="intro" class="intro hidden">
+        <p id="intro-text">Привет! Я Woody.</p>
+        <form id="name-form" class="hidden">
+          <input id="name-input" autocomplete="given-name" maxlength="50" placeholder="Твоё имя" required>
+          <button type="submit" class="primary">Познакомиться</button>
+        </form>
+      </div>
+    </section>
+
+    <section id="chat" class="chat" aria-live="polite"></section>
+
+    <footer class="controls">
+      <form id="chat-form" autocomplete="off">
+        <input id="chat-input" placeholder="Напиши Woody…" maxlength="2000" enterkeyhint="send">
+        <button type="submit" class="ghost">Отправить</button>
+      </form>
+      <div class="buttons">
+        <button id="btn-talk" class="talk">ГОВОРИТЬ</button>
+        <button id="btn-stop" class="stop" aria-label="Остановить Woody">■ Стоп</button>
+      </div>
+    </footer>
+  </main>
+
+  <aside id="settings" class="drawer hidden" aria-label="Woody Settings">
+    <div class="drawer-head"><h2>Woody Settings</h2><button id="settings-close" class="icon-btn" aria-label="Закрыть">✕</button></div>
+    <div id="settings-body"></div>
+  </aside>
+
+  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <p id="modal-text"></p>
+      <div class="modal-actions" id="modal-actions"></div>
+    </div>
+  </div>
+
+  <div id="transfer" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box transfer-box">
+      <h2>Передай Woody</h2>
+      <div id="transfer-qr" class="qr"></div>
+      <p id="transfer-link" class="note link"></p>
+      <p id="transfer-timer" class="note"></p>
+      <p class="note">В ссылке нет ни имени, ни памяти, ни сообщений — только одноразовый код.</p>
+      <div class="modal-actions"><button id="transfer-close">Закрыть</button></div>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/face.js"></script>
+  <script src="/js/permissions.js"></script>
+  <script src="/js/voice.js"></script>
+  <script src="/js/gestures.js"></script>
+  <script src="/js/hands.js"></script>
+  <script src="/js/chat.js"></script>
+  <script src="/js/transfer.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
