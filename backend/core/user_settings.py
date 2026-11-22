@@ -14,11 +14,11 @@ DEFAULTS: dict[str, bool | str] = {
     "voice_replies": True,
     "always_on_camera": True,
     "learn_from_chats": True,
-    "voice_engine": "natural",  # natural (человеческий голос с сервера) | browser
+    "voice_engine": "natural",  # человеческий голос с сервера
     "voice_name": "coral",
 }
 CHOICES: dict[str, tuple[str, ...]] = {
-    "voice_engine": ("natural", "browser"),
+    "voice_engine": ("natural",),
     "voice_name": ("coral", "nova", "shimmer", "sage", "alloy", "ash", "echo", "onyx"),
 }
 

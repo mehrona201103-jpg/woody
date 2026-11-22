@@ -39,11 +39,11 @@ const Api = (() => {
       console.error(`[Woody API] ${opts.method || "GET"} ${url} — сетевая ошибка:`, e);
       throw new ApiError(0, "network", String(e.message || e), "Не удалось подключиться к Woody.");
     }
-    if (res.status === 401) {
-      const entered = window.prompt("Введите токен доступа Woody");
-      if (!entered) throw new ApiError(401, "auth", "Нужен токен доступа", "Нужен токен доступа.");
-      store.set(TOKEN_KEY, entered.trim());
-      return request(path, opts);
+    if (res.status === 401 && !path.startsWith("/auth/")) {
+      // Сессия недействительна — возвращаем на экран входа (никаких системных окон).
+      store.del(SESSION_KEY);
+      window.dispatchEvent(new CustomEvent("woody:unauth"));
+      throw new ApiError(401, "auth", "Нужно войти", "Войди, чтобы продолжить.");
     }
     let body = null;
     try { body = await res.json(); } catch (_) { /* не JSON */ }

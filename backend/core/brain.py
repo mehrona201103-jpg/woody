@@ -54,6 +54,19 @@ _LEARN_START = re.compile(r"(обучай|обучись|учи|учись|из�
 _LEARN_STOP = re.compile(r"(хватит|прекрати|перестань|останови|стоп)\w*.{0,20}(учи|обуч|изуч)", re.IGNORECASE)
 
 
+TONE_RE = re.compile(r"^\s*\[(joy|laugh|tender|calm|surprise|sad|cry|angry|think)\]\s*", re.IGNORECASE)
+TONE_FACE = {"joy": "happy", "laugh": "laughing", "tender": "happy", "calm": "neutral", "surprise": "surprised",
+             "sad": "sad", "cry": "crying", "angry": "angry", "think": "confused"}
+
+
+def split_tone(reply: str) -> tuple[str, str | None]:
+    """Отделяет тег настроения [joy] от текста ответа."""
+    m = TONE_RE.match(reply or "")
+    clean = TONE_RE.sub("", reply or "", count=1).strip() if m else (reply or "").strip()
+    clean = re.sub(r"\s*\[(?:joy|laugh|tender|calm|surprise|sad|cry|angry|think)\]\s*", " ", clean, flags=re.IGNORECASE).strip()
+    return clean, (m.group(1).lower() if m else None)
+
+
 def load_emotion(session: Session, user_id: int) -> EmotionState:
     row = session.scalars(select(Emotion).where(Emotion.user_id == user_id).order_by(Emotion.id.desc())).first()
     state = EmotionState()
@@ -147,6 +160,8 @@ class Brain:
             self.learning.context_lines(user.id),
             persona=self.identity.personality(),
         )
+        if source == "voice":
+            system += "\n\nСейчас голосовой разговор: отвечай одной-двумя короткими живыми фразами, как человек в разговоре."
         history = [
             {"role": "user" if m.role == "USER" else "assistant", "content": m.text}
             for m in self.memory.recent_messages(user.id, 10)
@@ -174,12 +189,13 @@ class Brain:
                 msg = f"{user.name}, сейчас я не могу связаться с AI-моделью, а в моём мозге такого ответа нет. Попробуй позже."
             return self._result(msg, emotion, face="confused", error="ai_unavailable")
 
+        reply, tone = split_tone(reply)
         if cacheable(text, reply) and UserSettings(self.session, user.id).get("learn_from_chats"):
             mind.remember(text, reply, "AI")  # Woody запоминает то, чего не знал
         emotion.decay(0.05)
         save_emotion(self.session, user.id, emotion)
         self.memory.add_message(user.id, "WOODY", reply, source)
-        return self._result(reply, emotion, provider=provider)
+        return self._result(reply, emotion, provider=provider, tone=tone or "calm", face=TONE_FACE.get(tone or "", emotion.face_state()))
 
     # --- действия -----------------------------------------------------------------
 

@@ -46,7 +46,7 @@ const HandTracker = (() => {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("Камера недоступна в этом браузере (нужен HTTPS).");
     cbs = callbacks;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } }, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 480 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 } }, audio: false });
     } catch (e) { console.error("[Woody camera]", e); throw cameraError(e); }
     video.srcObject = stream;
     stream.getVideoTracks().forEach((t) => { t.onended = () => { if (running) stop(); }; });
@@ -92,7 +92,7 @@ const HandTracker = (() => {
 
   async function loop(now) {
     if (!running) return;
-    if (now - lastSend > 66 && video.readyState >= 2) { // ~15 кадров/с
+    if (!document.hidden && now - lastSend > 100 && video.readyState >= 2) { // ~10 кадров/с: достаточно для жестов, телефон не греется
       lastSend = now;
       if (!busy) {
         busy = true;
@@ -101,7 +101,7 @@ const HandTracker = (() => {
         } catch (e) { console.error("[Woody hands] send", e); }
         busy = false;
       }
-      if (Math.round(now / 66) % 2 === 0) { try { motionStep(now); } catch (e) { console.error("[Woody motion]", e); } }
+      if (Math.round(now / 100) % 3 === 0) { try { motionStep(now); } catch (e) { console.error("[Woody motion]", e); } }
       if (!handsOk || now - handSeenAt > 700) label.textContent = now - lastMotionAt < 800 ? "вижу движение" : "смотрю";
     }
     requestAnimationFrame(loop);

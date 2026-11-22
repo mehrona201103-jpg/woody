@@ -58,6 +58,19 @@ def load_providers() -> list[ProviderConfig]:
                 timeout=float(os.getenv(prefix + "TIMEOUT", "30")),
             )
         )
+    # Короткий путь для OpenRouter: достаточно OPENROUTER_API_KEY (и по желанию OPENROUTER_MODEL).
+    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if or_key and len(providers) < 5:
+        providers.append(
+            ProviderConfig(
+                name="openrouter",
+                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip().rstrip("/"),
+                api_key=or_key,
+                model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip(),
+                tasks=tuple(t.strip().lower() for t in os.getenv("OPENROUTER_TASKS", "conversation,vision").split(",") if t.strip()),
+                timeout=float(os.getenv("OPENROUTER_TIMEOUT", "30")),
+            )
+        )
     return providers
 
 
@@ -133,6 +146,7 @@ class Settings:
         self.access_token: str = os.getenv("WOODY_ACCESS_TOKEN", "").strip()
         self.public_base_url: str = resolve_public_base_url()
         self.providers: list[ProviderConfig] = load_providers()
+        self.google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 
 
 def get_settings() -> Settings:

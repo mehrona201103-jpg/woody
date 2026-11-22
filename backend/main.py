@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
-import base64
+import asyncio
 import httpx
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -27,7 +27,8 @@ from backend.core.memory import MemoryService
 from backend.core.user_settings import CHOICES as SETTING_CHOICES
 from backend.core.user_settings import DEFAULTS as SETTING_DEFAULTS
 from backend.core.user_settings import UserSettings
-from backend.core.users import create_user, find_user_by_secret
+from backend.core.users import (AuthError, create_user, find_user_by_secret, login_email, login_google, logout as logout_session,
+                                register_email)
 from backend.database.database import SessionLocal, get_db, init_db
 from backend.database.models import User
 from backend.permissions.manager import ACTIONS, Decision, PermissionManager
@@ -72,7 +73,8 @@ app = FastAPI(title="Woody", version="0.3.0", lifespan=lifespan)
 async def require_token(request: Request, call_next):
     path = request.url.path
     # Публичны: health, страницы и проверка/погашение transfer-токена (их защищает сам одноразовый токен).
-    public = path == "/api/health" or path in ("/api/transfer/check", "/api/transfer/redeem")
+    public = (path == "/api/health" or path in ("/api/transfer/check", "/api/transfer/redeem")
+              or path.startswith("/api/auth/") or path == "/api/tts/greeting")
     if settings.access_token and path.startswith("/api/") and not public:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         authorized = hmac.compare_digest(supplied, settings.access_token)
@@ -134,6 +136,7 @@ class SettingsBody(BaseModel):
 class TTSBody(BaseModel):
     text: str = Field(min_length=1, max_length=700)
     voice: str | None = None
+    tone: str | None = None
 
 
 class SeeBody(BaseModel):
@@ -153,6 +156,90 @@ class RedeemBody(TokenBody):
     name: str = Field(min_length=1, max_length=50)
 
 
+class RegisterBody(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=50)
+
+
+class LoginBody(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class GoogleBody(BaseModel):
+    access_token: str = Field(min_length=10, max_length=4000)
+
+
+class RenameBody(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+
+
+def _auth_http(exc: AuthError) -> HTTPException:
+    return HTTPException(exc.status, {"code": exc.code, "message": exc.message})
+
+
+@app.get("/api/auth/config")
+def auth_config() -> dict:
+    return {"google_client_id": settings.google_client_id or None}
+
+
+@app.post("/api/auth/register")
+def auth_register(body: RegisterBody, db: Session = Depends(get_db)) -> dict:
+    try:
+        user, secret = register_email(db, body.email, body.password, body.name)
+    except AuthError as exc:
+        raise _auth_http(exc) from exc
+    return {"session": secret, "name": user.name, "new": True}
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginBody, request: Request, db: Session = Depends(get_db)) -> dict:
+    ip = request.client.host if request.client else ""
+    try:
+        user, secret = login_email(db, body.email, body.password, ip)
+    except AuthError as exc:
+        raise _auth_http(exc) from exc
+    return {"session": secret, "name": user.name, "new": False}
+
+
+@app.post("/api/auth/google")
+async def auth_google(body: GoogleBody, db: Session = Depends(get_db)) -> dict:
+    cid = settings.google_client_id
+    if not cid:
+        raise HTTPException(503, {"code": "google_off", "message": "Вход через Google ещё не настроен (GOOGLE_CLIENT_ID)."})
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            ti = await client.get("https://oauth2.googleapis.com/tokeninfo", params={"access_token": body.access_token})
+            info = ti.json() if ti.status_code == 200 else {}
+            if cid not in (info.get("aud"), info.get("azp")):
+                raise ValueError("audience")
+            ui = await client.get("https://openidconnect.googleapis.com/v1/userinfo",
+                                  headers={"Authorization": f"Bearer {body.access_token}"})
+            ui.raise_for_status()
+            profile = ui.json()
+    except (httpx.HTTPError, ValueError, KeyError):
+        raise HTTPException(401, {"code": "google_failed", "message": "Не удалось войти через Google. Попробуй ещё раз."}) from None
+    if not profile.get("email_verified", True) or not profile.get("sub"):
+        raise HTTPException(401, {"code": "google_failed", "message": "Почта Google не подтверждена."})
+    name = profile.get("given_name") or profile.get("name") or ""
+    user, secret, created = login_google(db, profile["sub"], profile.get("email", ""), name)
+    return {"session": secret, "name": user.name, "new": created}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(x_woody_session: str | None = Header(default=None), db: Session = Depends(get_db)) -> dict:
+    logout_session(db, x_woody_session)
+    return {"ok": True}
+
+
+@app.put("/api/user")
+def rename_user(body: RenameBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    user.name = body.name.strip()
+    db.commit()
+    return {"name": user.name}
+
+
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, str]:
@@ -166,6 +253,7 @@ def _user_payload(db: Session, user: User | None) -> dict:
     return {
         "registered": True,
         "name": user.name,
+        "email": user.email,
         "settings": UserSettings(db, user.id).all(),
         "state": emotion.state("idle"),
         "face": emotion.face_state(),
@@ -203,7 +291,7 @@ def status(user: User | None = Depends(get_user_optional), db: Session = Depends
             "persistent": settings.persistent,
             "brain": Mind(db).stats(),
             "learning": LEARNER.status(),
-            "tts": bool(_tts_target()),
+            "tts": True,
         }
     )
     return payload
@@ -229,7 +317,7 @@ async def voice(body: ChatBody, user: User = Depends(require_user), db: Session 
 
 @app.get("/api/history")
 def history(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
-    return [{"role": r.role, "text": r.text} for r in MemoryService(db).recent_messages(user.id, 50, include_voice=False)]
+    return [{"role": r.role, "text": r.text} for r in MemoryService(db).recent_messages(user.id, 60, include_voice=True)]
 
 
 # ------------------------------------------------------------------ permissions
@@ -370,30 +458,100 @@ def _tts_target() -> tuple[str, str] | None:
     return (base, key) if base and key else None
 
 
+_OPENAI_TONE = {
+    "laugh": "Ты искренне смеёшься: говори весело, с лёгким смехом в голосе, можешь коротко рассмеяться.",
+    "joy": "Говори радостно, живо и тепло, с улыбкой в голосе.",
+    "tender": "Говори мягко, нежно и тепло, чуть тише обычного.",
+    "calm": "Говори спокойно и естественно, как друг в разговоре.",
+    "surprise": "Говори удивлённо, с живой повышающейся интонацией.",
+    "sad": "Говори грустно, тише и медленнее, с печалью в голосе.",
+    "cry": "Говори сквозь слёзы: дрожащий голос, паузы, всхлипы, но слова остаются понятными.",
+    "angry": "Говори раздражённо, но сдержанно, резче и короче.",
+    "think": "Говори задумчиво, с паузами, как будто размышляешь вслух.",
+}
+_EDGE_TONE = {  # (скорость, высота) для бесплатного нейронного голоса
+    "laugh": ("+10%", "+6Hz"), "joy": ("+6%", "+3Hz"), "tender": ("-6%", "+1Hz"), "calm": ("+0%", "+0Hz"),
+    "surprise": ("+8%", "+8Hz"), "sad": ("-12%", "-6Hz"), "cry": ("-16%", "-4Hz"), "angry": ("+8%", "-3Hz"), "think": ("-4%", "+0Hz"),
+}
+_MALE_VOICES = {"ash", "echo", "onyx"}
+_tts_client = httpx.AsyncClient(timeout=30, limits=httpx.Limits(max_keepalive_connections=8))
+_GREETINGS = {
+    "welcome": "Привет! Я Вуди. Чтобы начать общаться со мной, зарегистрируйся. А если мы уже знакомы, просто войди.",
+    "login": "Рад тебя снова видеть! Входи, и продолжим разговор.",
+}
+_greeting_cache: dict[str, bytes] = {}
+
+
+_openai_down_until = 0.0
+
+
+async def _openai_tts(text: str, voice: str, tone: str) -> bytes | None:
+    global _openai_down_until
+    import time as _t
+    target = _tts_target()
+    if not target or _t.time() < _openai_down_until:
+        return None
+    base, key = target
+    payload = {"model": settings.tts_model, "voice": voice, "input": text, "response_format": "mp3",
+               "instructions": "Говори по-русски как обычный живой человек в разговоре, не как диктор. " + _OPENAI_TONE.get(tone, _OPENAI_TONE["calm"])}
+    try:
+        resp = await _tts_client.post(f"{base}/audio/speech", headers={"Authorization": f"Bearer {key}"}, json=payload)
+        if resp.status_code in (400, 404, 422) and settings.tts_model != "tts-1":
+            payload.update(model="tts-1"); payload.pop("instructions", None)
+            resp = await _tts_client.post(f"{base}/audio/speech", headers={"Authorization": f"Bearer {key}"}, json=payload)
+        resp.raise_for_status()
+        return resp.content
+    except httpx.HTTPError as exc:
+        logger.warning("OpenAI TTS недоступен: %s", type(exc).__name__)
+        _openai_down_until = _t.time() + 600
+        return None
+
+
+async def _edge_tts(text: str, voice: str, tone: str) -> bytes | None:
+    try:
+        import edge_tts
+    except ImportError:
+        return None
+    rate, pitch = _EDGE_TONE.get(tone, _EDGE_TONE["calm"])
+    name = "ru-RU-DmitryNeural" if voice in _MALE_VOICES else "ru-RU-SvetlanaNeural"
+    try:
+        async def run() -> bytes:
+            out = bytearray()
+            async for chunk in edge_tts.Communicate(text, name, rate=rate, pitch=pitch).stream():
+                if chunk["type"] == "audio":
+                    out += chunk["data"]
+            return bytes(out)
+        data = await asyncio.wait_for(run(), timeout=20)
+        return data or None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Edge TTS недоступен: %s", type(exc).__name__)
+        return None
+
+
+async def _synthesize(text: str, voice: str, tone: str) -> bytes:
+    data = await _openai_tts(text, voice, tone) or await _edge_tts(text, voice, tone)
+    if not data:
+        raise HTTPException(503, {"code": "tts_unavailable", "message": "Голос сейчас недоступен."})
+    return data
+
+
 @app.post("/api/tts")
 async def tts(body: TTSBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> Response:
-    target = _tts_target()
-    if not target:
-        raise HTTPException(503, {"code": "tts_unavailable", "message": "Серверный голос не настроен."})
     voice = body.voice or UserSettings(db, user.id).get("voice_name")
     if voice not in SETTING_CHOICES["voice_name"]:
         voice = "coral"
-    base, key = target
-    payload = {
-        "model": settings.tts_model, "voice": voice, "input": body.text, "response_format": "mp3",
-        "instructions": "Говори по-русски как обычный живой человек в разговоре: непринуждённо, тепло, с естественными паузами и интонацией, не как диктор.",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(f"{base}/audio/speech", headers={"Authorization": f"Bearer {key}"}, json=payload)
-            if resp.status_code in (400, 404, 422) and settings.tts_model != "tts-1":
-                payload.update(model="tts-1"); payload.pop("instructions", None)  # модель без instructions
-                resp = await client.post(f"{base}/audio/speech", headers={"Authorization": f"Bearer {key}"}, json=payload)
-        resp.raise_for_status()
-    except httpx.HTTPError as exc:
-        logger.warning("TTS недоступен: %s", type(exc).__name__)
-        raise HTTPException(503, {"code": "tts_unavailable", "message": "Серверный голос сейчас недоступен."}) from exc
-    return Response(resp.content, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+    data = await _synthesize(body.text, voice, (body.tone or "calm").lower())
+    return Response(data, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/tts/greeting")
+async def tts_greeting(kind: str = "welcome") -> Response:
+    """Публичная озвучка фиксированных фраз для экрана входа (произвольный текст синтезировать нельзя)."""
+    if kind not in _GREETINGS:
+        raise HTTPException(404, "Нет такой фразы")
+    if kind not in _greeting_cache:
+        _greeting_cache[kind] = await _synthesize(_GREETINGS[kind], "coral", "joy")
+    return Response(_greeting_cache[kind], media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.post("/api/see")

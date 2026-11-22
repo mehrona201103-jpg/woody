@@ -9,6 +9,10 @@ const Face = (() => {
   const lidL = eyeL.querySelector(".lid"), lidR = eyeR.querySelector(".lid");
   const pupilL = eyeL.querySelector(".pupil-g"), pupilR = eyeR.querySelector(".pupil-g");
   const svg = $("face");
+  const _c = new WeakMap();   // пишем в DOM только изменившиеся значения — меньше перерисовок, нет лагов
+  const r = (n) => Math.round(n * 10) / 10;
+  function put(el, attr, val) { let m = _c.get(el); if (!m) { m = {}; _c.set(el, m); } if (m[attr] !== val) { m[attr] = val; el.setAttribute(attr, val); } }
+  let crying = false;
 
   // lidIn/lidOut — насколько прикрыто веко у внутреннего/внешнего угла глаза (0..1)
   // smile: -1 грусть … 1 улыбка; open: 0..1 раскрытие рта; width: ширина рта; brow: [высота, наклон]
@@ -24,6 +28,8 @@ const Face = (() => {
     surprised: { lidIn: .00, lidOut: .00, scale: 1.18, smile: 0,    open: .85, width: 26, browY: -14, browTilt: 0,   look: null },
     confused:  { lidIn: .06, lidOut: .10, scale: 1.00, smile: -.10, open: 0,   width: 44, browY: -6,  browTilt: 10,  look: [10, -4] },
     learning:  { lidIn: 1.00, lidOut: 1.00, scale: 1.00, smile: .35,  open: 0,   width: 42, browY: -6,  browTilt: -3,  look: [0, 0] },
+    laughing:  { lidIn: .00, lidOut: .55, scale: 1.04, smile: 1.00, open: .55, width: 60, browY: -8, browTilt: -2, look: [0, 0] },
+    crying:    { lidIn: .00, lidOut: .45, scale: 1.00, smile: -1.00, open: .25, width: 44, browY: 3, browTilt: 14, look: [0, 10] },
     sleepy:    { lidIn: .60, lidOut: .60, scale: 1.00, smile: .00,  open: 0,   width: 40, browY: 4,   browTilt: 0,   look: [0, 6] },
   };
   const KEYS = ["lidIn", "lidOut", "scale", "smile", "open", "width", "browY", "browTilt"];
@@ -59,7 +65,7 @@ const Face = (() => {
   function lidPath(inner, outer, blinkAmt, side) {
     // side: -1 левый глаз (внутренний угол справа), +1 правый (внутренний слева)
     const rin = Math.min(1, inner + blinkAmt), rout = Math.min(1, outer + blinkAmt);
-    const yIn = -50 + rin * 100, yOut = -50 + rout * 100;
+    const yIn = r(-50 + rin * 100), yOut = r(-50 + rout * 100);
     const xl = side < 0 ? yOut : yIn, xr = side < 0 ? yIn : yOut;
     return `M-48 -52 L48 -52 L48 ${xr} L-48 ${xl} Z`;
   }
@@ -95,26 +101,28 @@ const Face = (() => {
       talkTarget = Math.max(0.08, Math.min(1, base + pulse + (energy - 50) / 400));
       talkLevel += (talkTarget - talkLevel) * (1 - Math.pow(0.0001, dt / 1000));
       mouth.open = talkLevel; mouth.width = 46 + talkLevel * 10;
-    } else { talkLevel *= 0.6; }
+    } else { talkLevel *= 0.6; if (tg.name === "laughing") mouth.open = 0.4 + 0.25 * Math.sin(now / 90); }
     if (mouthOverride !== null) mouth.open = mouthOverride;
 
     const p = path(mouth);
-    mouthEl.setAttribute("d", p.d);
-    mouthEl.style.fill = p.fill ? `rgba(6,16,46,${p.fill})` : "none";
+    put(mouthEl, "d", p.d.replace(/(\d+\.\d)\d+/g, "$1"));
+    const fill = p.fill ? `rgba(6,16,46,${p.fill.toFixed(2)})` : "none";
+    if (mouthEl.style.fill !== fill) mouthEl.style.fill = fill;
 
-    for (const [g, side] of [[eyeL, -1], [eyeR, 1]]) {
-      const x = side < 0 ? 120 : 280;
-      const breathe = 1 + Math.sin(now / 1900) * 0.012; // лёгкое «дыхание»
-      g.setAttribute("transform", `translate(${x} ${110 + Math.sin(now / 1900) * 1.2}) scale(${cur.scale * breathe})`);
-    }
-    lidL.setAttribute("d", lidPath(cur.lidIn, cur.lidOut, blink, -1));
-    lidR.setAttribute("d", lidPath(cur.lidIn, cur.lidOut, blink, 1));
-    const px = `translate(${look.x} ${look.y}) scale(${pupilScale})`;
-    pupilL.setAttribute("transform", px); pupilR.setAttribute("transform", px);
+    const breathe = 1 + Math.sin(now / 1900) * 0.012;
+    const dy = r(110 + Math.sin(now / 1900) * 1.2 + (tg.name === "laughing" ? Math.sin(now / 55) * 3.2 : 0)), sc = r(cur.scale * breathe * 100) / 100;
+    put(eyeL, "transform", `translate(120 ${dy}) scale(${sc})`);
+    put(eyeR, "transform", `translate(280 ${dy}) scale(${sc})`);
+    put(lidL, "d", lidPath(cur.lidIn, cur.lidOut, blink, -1));
+    put(lidR, "d", lidPath(cur.lidIn, cur.lidOut, blink, 1));
+    const px = `translate(${r(look.x)} ${r(look.y)}) scale(${r(pupilScale * 100) / 100})`;
+    put(pupilL, "transform", px); put(pupilR, "transform", px);
 
-    const by = cur.browY, tl = cur.browTilt;
-    browL.setAttribute("d", `M80 ${50 + by + tl} Q120 ${40 + by} 160 ${50 + by - tl}`);
-    browR.setAttribute("d", `M240 ${50 + by - tl} Q280 ${40 + by} 320 ${50 + by + tl}`);
+    const by = r(cur.browY), tl = r(cur.browTilt);
+    put(browL, "d", `M80 ${r(50 + by + tl)} Q120 ${r(40 + by)} 160 ${r(50 + by - tl)}`);
+    put(browR, "d", `M240 ${r(50 + by - tl)} Q280 ${r(40 + by)} 320 ${r(50 + by + tl)}`);
+    const cry = tg.name === "crying";
+    if (cry !== crying) { crying = cry; svg.classList.toggle("crying", cry); }
     requestAnimationFrame(frame);
   }
 
@@ -149,7 +157,9 @@ const Face = (() => {
   /** Для будущего lip-sync по реальной громкости: 0..1 или null. */
   function setMouthLevel(v) { mouthOverride = v; }
 
+  /** Переносит лицо в другой контейнер (экран входа, чат, голос). */
+  function mount(el) { if (el && svg.parentNode !== el) el.appendChild(svg); }
   scheduleBlink(); setTimeout(wander, 1500); requestAnimationFrame(frame);
-  return { applyState, setEmotion, setActivity, lookAt, flash, setLearning, startTalking, stopTalking, wordBoundary, setMouthLevel, states: Object.keys(T),
+  return { mount, applyState, setEmotion, setActivity, lookAt, flash, setLearning, startTalking, stopTalking, wordBoundary, setMouthLevel, states: Object.keys(T),
            get emotion() { return emotion; }, get activity() { return activity; }, get talking() { return talking; } };
 })();

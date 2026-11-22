@@ -306,11 +306,11 @@ def test_personal_questions_are_not_stored_in_shared_brain(client, alik):
         assert Mind(s).recall("Как меня зовут?", 0.5) is None
 
 
-def test_voice_conversations_stay_out_of_chat_history(client, alik):
+def test_voice_conversations_are_shared_with_chat_history(client, alik):
     router.providers = [FakeProvider("a", "Секретный голосовой ответ")]
     _say(client, alik, "Расскажи голосом про гору Эверест", "/api/voice", source="voice")
     texts = [m["text"] for m in client.get("/api/history", headers=H(alik)).json()]
-    assert "Секретный голосовой ответ" not in texts
+    assert "Секретный голосовой ответ" in texts  # один общий разговор: голос и чат помнят друг друга
 
 
 def test_self_learning_runs_until_key_limit_then_brain_answers():

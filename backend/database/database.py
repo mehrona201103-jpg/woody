@@ -25,6 +25,9 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 # (таблица, колонка, DDL) — колонки, добавленные после v0.1
 _ADDED_COLUMNS = [
     ("users", "session_hash", "VARCHAR(64)"),
+    ("users", "email", "VARCHAR(200)"),
+    ("users", "password_hash", "VARCHAR(300)"),
+    ("users", "google_sub", "VARCHAR(64)"),
     ("emotions", "user_id", "INTEGER"),
     ("knowledge", "user_id", "INTEGER"),
     ("conversations", "source", "VARCHAR(10)"),

@@ -104,3 +104,39 @@ SQLite-файл на Render Free / Railway без диска стирается 
 - MediaPipe и qrcode.js грузятся с CDN (jsdelivr/cdnjs): нужен интернет на телефоне.
 - Фоновый режим: только интерфейс-заглушка, Background Companion — TODO.
 - Ожидающие подтверждения хранятся в памяти процесса (один worker).
+
+---
+
+## v0.4 — приложение в стиле ChatGPT, регистрация, Google, OpenRouter
+
+**Что нового**
+- Интерфейс как у ChatGPT: чат + отдельный голосовой режим, боковое меню, настройки-лист. Работает как приложение (PWA: «Добавить на главный экран»).
+- Плавность: убраны тяжёлые эффекты (`filter`, `backdrop-filter`), анимации только на `transform/opacity`, лицо перерисовывается только при изменениях, жесты камеры — ~10 кадров/с.
+- Живой голос без голоса браузера: OpenAI TTS (если есть ключ) → бесплатный нейронный голос `edge-tts` (запасной). Эмоции: смех, грусть, слёзы, удивление.
+- Голосовой режим: микрофон слушает постоянно, камера включена, касание лица — перебить Woody. «Давай в чат» / «давай на голосовой режим» переключают режимы, разговор общий.
+- Регистрация и вход: почта + пароль + имя, кнопка «Продолжить с Google», анимация после регистрации.
+
+**Variables (Railway / Maze Host → Variables)**
+
+OpenRouter как второй ИИ (самый простой способ):
+```
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=openai/gpt-4o-mini
+```
+Или классически через слот провайдера:
+```
+AI_PROVIDER_2_NAME=openrouter
+AI_PROVIDER_2_BASE_URL=https://openrouter.ai/api/v1
+AI_PROVIDER_2_API_KEY=sk-or-v1-...
+AI_PROVIDER_2_MODEL=openai/gpt-4o-mini
+AI_PROVIDER_2_TASKS=conversation
+```
+
+Вход через Google:
+```
+GOOGLE_CLIENT_ID=xxxxxxxx.apps.googleusercontent.com
+```
+Google Cloud Console → APIs & Services → Credentials → Create credentials → OAuth client ID → Web application →
+Authorized JavaScript origins: адрес вашего сайта (https://…up.railway.app). Redirect URI не нужен.
+
+Рекомендуется для постоянных аккаунтов: `DATABASE_URL` (Postgres). `WOODY_ACCESS_TOKEN` теперь можно не задавать — вход защищён регистрацией.

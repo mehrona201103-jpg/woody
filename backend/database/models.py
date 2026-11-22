@@ -41,6 +41,19 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(100))
     # sha256 от секрета сессии; сам секрет хранится только в браузере пользователя
     session_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    email: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True, index=True)
+    password_hash: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    google_sub: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class UserSession(Base):
+    """Сессия входа (по одной на устройство). В БД только хэш секрета."""
+
+    __tablename__ = "user_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
