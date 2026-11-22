@@ -2,7 +2,7 @@
   const $ = (id) => document.getElementById(id);
   const api = Api.request;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  const DEFAULTS = { memory_enabled: true, camera_enabled: true, microphone_enabled: true, hand_tracking_enabled: true, transfer_enabled: true, voice_replies: true, always_on_camera: true, learn_from_chats: true, voice_engine: "natural", voice_name: "coral" };
+  const DEFAULTS = { memory_enabled: true, camera_enabled: true, microphone_enabled: true, hand_tracking_enabled: true, transfer_enabled: true, voice_replies: true, always_on_camera: true, learn_from_chats: true, voice_engine: "browser", voice_name: "coral" };
   let settings = { ...DEFAULTS }, user = { name: "", email: "" };
   let mode = "chat", voiceOn = false, micMuted = false, transferBusy = false, lastWave = 0;
 
@@ -23,6 +23,7 @@
     mode = m;
     $("chat-view").classList.toggle("active", m === "chat");
     $("voice-view").classList.toggle("active", m === "voice");
+    $("group-view").classList.toggle("active", m === "group");
     $("nav-chat").classList.toggle("active", m === "chat");
     $("nav-voice").classList.toggle("active", m === "voice");
     Face.mount(m === "voice" ? $("voice-face") : $("empty-face"));
@@ -85,7 +86,14 @@
   $("v-end").onclick = exitVoice;
   $("btn-to-voice").onclick = () => enterVoice();
   $("nav-voice").onclick = () => enterVoice();
-  $("nav-chat").onclick = () => { if (mode === "voice") exitVoice(); else closeSidebar(); };
+  async function newChat() { if (mode === "voice") await exitVoice(); Groups.close(); Chat.newChat(); Photos.clear(); switchMode("chat"); History.render(); }
+  $("nav-chat").onclick = newChat;
+  History.init({
+    openChat: async (id) => { if (mode === "voice") await exitVoice(); Groups.close(); await Chat.open(id); switchMode("chat"); History.render(); },
+    confirmDelete: (q) => Permissions.choose(q, [["Да", true, "danger"], ["Отмена", false]]),
+  });
+  Groups.init({ show: () => switchMode("group"), back: () => switchMode("chat"), confirmDelete: (q) => Permissions.choose(q, [["Да", true, "danger"], ["Отмена", false]]) });
+  Chat.onChanged = () => History.refresh();
 
   // ---------------------------------------------------------------- сайдбар
   function openSidebar() { $("sidebar").classList.add("on"); $("scrim").classList.add("on"); }
@@ -100,12 +108,13 @@
 
   // ---------------------------------------------------------------- ввод в чате
   const ta = $("chat-input"), sendBtn = $("btn-send"), stopBtn = $("btn-stop");
-  ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 140) + "px"; sendBtn.disabled = !ta.value.trim(); };
+  ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 140) + "px"; sendBtn.disabled = !ta.value.trim() && !Photos.image; };
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); $("chat-form").requestSubmit(); } };
   $("chat-form").onsubmit = (e) => {
     e.preventDefault();
-    const t = ta.value.trim(); if (!t || Chat.busy) return;
+    const t = ta.value.trim(), img = Photos.image; if ((!t && !img) || Chat.busy) return;
     ta.value = ""; ta.style.height = "auto"; sendBtn.disabled = true;
+    if (img) { Photos.clear(); Chat.send(t, "text", img); return; }
     if (TO_VOICE.test(t)) {            // «давай на голосовой режим» → микрофон включается сам, чат плавно уходит
       Chat.add("user", t); const line = "Хорошо, включаю голосовой режим.";
       Chat.add("woody", line); return enterVoice("Я тебя слушаю.");
@@ -163,10 +172,10 @@
     user = { name: u.name, email: u.email || "" };
     settings = { ...DEFAULTS, ...u.settings };
     Voice.setVoiceReplies(settings.voice_replies); Voice.configure(settings);
-    $("side-name").textContent = user.name; $("side-email").textContent = user.email; $("side-avatar").textContent = (user.name[0] || "W").toUpperCase();
+    $("side-name").textContent = user.name; $("side-email").textContent = user.email; Avatars.fill($("side-avatar"), user.name, u.picture);
     $("empty-title").textContent = `Чем помочь, ${user.name}?`;
     Face.applyState(u.state);
-    Chat.clear(); await Chat.loadHistory();
+    Chat.newChat(); History.refresh(); Groups.refresh();
     Auth.hide(); switchMode("chat"); $("app").classList.add("active");
     Learn.resume();
     api("/status").then((st) => { if (!st.providers.length) Chat.add("woody", "AI-провайдеры не настроены. Добавь AI_PROVIDER_1_* или OPENROUTER_API_KEY в Variables на сервере — и я смогу отвечать.", true); }).catch(() => {});
@@ -202,14 +211,14 @@
     voiceOn = false; Voice.stopConversation(); Voice.stopSpeaking(); stopCamera(); Chat.abort();
     if (callApi) { try { await api("/auth/logout", { method: "POST" }); } catch (_) { /* — */ } }
     Api.clearSession(); closeSidebar(); $("settings").classList.remove("on");
-    $("app").classList.remove("active"); Chat.clear();
+    $("app").classList.remove("active"); Chat.newChat(); History.reset(); Groups.reset(); Photos.clear();
     setTimeout(() => Auth.show(), 200);
   }
 
   // ---------------------------------------------------------------- запуск
   async function boot() {
     Auth.init(); Auth.onDone = onAuthDone;
-    const finishBoot = () => $("boot").classList.add("off");
+    const finishBoot = () => Splash.finish();
     if (!(await connect())) { finishBoot(); Auth.show(); Auth.error("Не удалось подключиться к Woody. Проверь интернет и попробуй ещё раз."); return; }
     const join = location.pathname.match(/^\/join\/([^/]+)\/?$/);
     if (join) { finishBoot(); const ok = await Transfer.join(decodeURIComponent(join[1]), Auth.intro); if (ok) { await sleep(600); location.replace("/"); } return; }
@@ -257,11 +266,19 @@
 
       body.append(section("Голос"));
       body.append(toggleRow("Отвечать голосом в голосовом режиме", "voice_replies", (on) => Voice.setVoiceReplies(on)));
+      const eng = h("input", { type: "checkbox", checked: settings.voice_engine !== "natural" });
       const vsel = h("select");
+      const vrow = h("div", { className: "row" }, h("span", { textContent: "Настоящий голос" }), vsel);
+      const syncVoiceRow = () => vrow.classList.toggle("hidden", eng.checked);
+      eng.onchange = async () => {
+        try { await save({ voice_engine: eng.checked ? "browser" : "natural" }); Voice.configure(settings); syncVoiceRow(); Voice.unlock(); Voice.speak(eng.checked ? "Теперь я говорю голосом браузера." : "Теперь я говорю настоящим голосом.", { tone: "joy", force: true }); }
+        catch (e) { eng.checked = !eng.checked; Chat.add("woody", e.userMessage || "Не удалось сохранить настройку.", true); }
+      };
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Голос браузера (временно)" }), h("label", { className: "sw" }, eng, h("i"))));
       for (const [v, l] of [["coral", "Коралл (женский, тёплый)"], ["nova", "Нова (женский, живой)"], ["shimmer", "Шиммер (женский, мягкий)"], ["sage", "Сейдж (спокойный)"], ["alloy", "Эллой (нейтральный)"], ["ash", "Эш (мужской)"], ["echo", "Эхо (мужской)"], ["onyx", "Оникс (мужской, низкий)"]]) vsel.append(h("option", { value: v, textContent: l, selected: settings.voice_name === v }));
-      vsel.onchange = async () => { await save({ voice_name: vsel.value }); Voice.configure(settings); Voice.unlock(); Voice.speak("Привет! Вот так я теперь говорю.", { tone: "joy" }); };
-      body.append(h("div", { className: "row" }, h("span", { textContent: "Голос" }), vsel));
-      body.append(note("Woody говорит живым нейронным голосом с эмоциями (смеётся, грустит, удивляется). Голос браузера не используется."));
+      vsel.onchange = async () => { await save({ voice_name: vsel.value }); Voice.configure(settings); Voice.unlock(); Voice.speak("Привет! Вот так я теперь говорю.", { tone: "joy", force: true }); };
+      body.append(vrow); syncVoiceRow();
+      body.append(note("Включено — Woody говорит голосом твоего браузера, это бесплатно. Выключи, чтобы включить настоящий живой голос от провайдера (нужен платный ключ). В чате текст озвучивается только по кнопке 🔊 под ответом."));
 
       body.append(section("Камера и микрофон"));
       body.append(toggleRow("Камера разрешена", "camera_enabled", (on) => { if (!on) stopCamera(); }));
@@ -305,7 +322,7 @@
       const clr = h("button", { textContent: "Очистить всю память и историю", className: "btn3d wide" });
       clr.onclick = async () => {
         const ok = await Permissions.choose("Удалить всю твою память и историю разговоров?", [["Да, удалить всё", true, "danger"], ["Отмена", false]]);
-        if (ok) { await api("/memory", { method: "DELETE" }); Chat.clear(); renderSettings(); }
+        if (ok) { await api("/memory", { method: "DELETE" }); Chat.newChat(); History.reset(); renderSettings(); }
       };
       body.append(clr);
 
@@ -331,6 +348,10 @@
       body.append(note("Не удалось загрузить настройки."));
     }
   }
+
+  $("ad-me").innerHTML = Avatars.woody(); $("ad-bubble").innerHTML = Avatars.woody();
+  // Woody один на всех: если на другом устройстве началось обучение, здесь он тоже закрывает глазки
+  setInterval(() => { if (!document.hidden && $("app").classList.contains("active") && !Learn.active) Learn.resume(); }, 15000);
 
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
   boot();

@@ -104,7 +104,8 @@ class SelfLearner:
                 self.state["topic"] = topic
                 with session_factory() as session:
                     mind = Mind(session)
-                    if normalize(topic) in mind.known_norms():
+                    known = mind.known_norms()
+                    if normalize(topic) in known or normalize(f"Расскажи про {topic}") in known:  # уже выучено — не повторяем
                         continue
                 try:
                     raw = await self._ask(

@@ -1,4 +1,4 @@
-/* Голос Woody — только живой голос с сервера (/api/tts), голос браузера НЕ используется.
+/* Голос Woody: «браузер» (временно, бесплатно) или живой голос провайдера с сервера (/api/tts) — переключается в настройках.
    Быстро: фразы синтезируются параллельно и играют по очереди (первая — короткая).
    Эмоции: тон ответа (смех, грусть, слёзы…) передаётся в синтез.
    Слушает: Web Speech API, непрерывно, с автоперезапуском; на время ответа Woody слух ставится на паузу. */
@@ -6,7 +6,7 @@ const Voice = (() => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   const supported = { stt: !!SR };
   const micBadge = document.getElementById("mic-badge");
-  let voiceName = "coral", replies = true;
+  let voiceName = "coral", replies = true, engine = "browser", speakingNow = false;
   let token = 0, audio = null, actx = null, analyser = null, buf = null, raf = 0, wired = false, warned = false;
 
   // ------------------------------------------------------------ воспроизведение
@@ -81,31 +81,72 @@ const Voice = (() => {
     });
   }
 
-  /** Говорит текст живым голосом. Возвращает промис, который завершается, когда Woody договорил. */
-  async function speak(text, opts = {}) {
-    if (!replies || !text) return;
-    const my = ++token; stopAudioOnly();
-    const tone = opts.tone || "calm", chunks = split(text);
-    const jobs = chunks.map((c) => fetchChunk(c, tone, my));
-    let played = false;
-    for (let i = 0; i < jobs.length; i++) {
-      const url = await jobs[i];
-      if (my !== token) return;
-      if (url) { played = true; await playUrl(url, my); }
+  /** Убирает из текста то, что нельзя читать вслух: блоки кода, разметку, ссылки. */
+  function speakable(text) {
+    return text.replace(/```[\s\S]*?(```|$)/g, " Код показан в чате. ").replace(/`([^`]*)`/g, "$1").replace(/[*#_>~|]+/g, " ")
+      .replace(/https?:\/\/\S+/g, "ссылка").replace(/\s+/g, " ").trim();
+  }
+
+  const TONE_BROWSER = { laugh: [1.1, 1.15], joy: [1.05, 1.1], tender: [.92, 1.05], calm: [1, 1], surprise: [1.05, 1.2], sad: [.85, .85], cry: [.8, .8], angry: [1.1, .9], think: [.92, 1] };
+  function browserVoice() {
+    const list = window.speechSynthesis ? speechSynthesis.getVoices() : [];
+    return list.find((v) => /^ru/i.test(v.lang) && /(google|milena|yuri|microsoft)/i.test(v.name)) || list.find((v) => /^ru/i.test(v.lang)) || null;
+  }
+  if (window.speechSynthesis) speechSynthesis.onvoiceschanged = () => {};
+
+  /** Голос браузера: бесплатный, работает без сервера. Длинный текст режем на фразы (иначе Chrome обрывает речь). */
+  async function speakBrowser(text, tone, my) {
+    const synth = window.speechSynthesis;
+    if (!synth) return false;
+    synth.cancel();
+    const [rate, pitch] = TONE_BROWSER[tone] || TONE_BROWSER.calm;
+    for (const part of split(text)) {
+      if (my !== token) return true;
+      await new Promise((resolve) => {
+        const u = new SpeechSynthesisUtterance(part);
+        u.lang = "ru-RU"; u.rate = rate; u.pitch = pitch; const v = browserVoice(); if (v) u.voice = v;
+        u.onstart = () => Face.startTalking(); u.onboundary = () => Face.wordBoundary();
+        u.onend = u.onerror = () => resolve();
+        synth.speak(u);
+      });
     }
-    if (my !== token) return;
-    cancelAnimationFrame(raf); Face.setMouthLevel(null); Face.stopTalking();
-    if (!played && !warned) { warned = true; window.dispatchEvent(new CustomEvent("woody:novoice")); }
+    Face.stopTalking();
+    return true;
+  }
+
+  /** Говорит текст. Возвращает промис, который завершается, когда Woody договорил. opts.force — озвучить, даже если голос ответов выключен (кнопка под сообщением). */
+  async function speak(text, opts = {}) {
+    text = speakable(text || "");
+    if ((!replies && !opts.force) || !text) return;
+    const my = ++token; stopAudioOnly(); speakingNow = true;
+    try {
+      const tone = opts.tone || "calm";
+      if (engine === "browser") { if (!(await speakBrowser(text, tone, my)) && !warned) { warned = true; window.dispatchEvent(new CustomEvent("woody:novoice")); } return; }
+      const chunks = split(text);
+      const jobs = chunks.map((c) => fetchChunk(c, tone, my));
+      let played = false;
+      for (let i = 0; i < jobs.length; i++) {
+        const url = await jobs[i];
+        if (my !== token) return;
+        if (url) { played = true; await playUrl(url, my); }
+      }
+      if (my !== token) return;
+      cancelAnimationFrame(raf); Face.setMouthLevel(null); Face.stopTalking();
+      if (!played) { // голос провайдера не ответил (например, бесплатный тариф) — выручает голос браузера
+        if (!(await speakBrowser(text, tone, my)) && !warned) { warned = true; window.dispatchEvent(new CustomEvent("woody:novoice")); }
+      }
+    } finally { if (my === token) speakingNow = false; }
   }
 
   function stopAudioOnly() {
+    if (window.speechSynthesis) { try { speechSynthesis.cancel(); } catch (_) { /* — */ } }
     if (audio) { try { audio.pause(); } catch (_) { /* — */ } }
     cancelAnimationFrame(raf); Face.setMouthLevel(null);
   }
   /** Немедленно прерывает речь Woody. */
-  function stopSpeaking() { token++; stopAudioOnly(); Face.stopTalking(); }
+  function stopSpeaking() { token++; speakingNow = false; stopAudioOnly(); Face.stopTalking(); }
 
-  function configure(s) { if (s && s.voice_name) voiceName = s.voice_name; }
+  function configure(s) { if (!s) return; if (s.voice_name) voiceName = s.voice_name; if (s.voice_engine) engine = s.voice_engine; }
 
   // ------------------------------------------------------------ слушание (непрерывно)
   let rec = null, want = false, paused = false, listening = false, h = {};
@@ -147,6 +188,6 @@ const Voice = (() => {
   function mute(m) { if (m) { pause(); setMic(false); } else resume(); }
 
   return { supported, speak, stopSpeaking, unlock, configure, startConversation, stopConversation, pause, resume, mute,
-           setVoiceReplies: (v) => { replies = v; if (!v) stopSpeaking(); }, get voiceReplies() { return replies; },
+           setVoiceReplies: (v) => { replies = v; if (!v) stopSpeaking(); }, get voiceReplies() { return replies; }, get speaking() { return speakingNow; }, get engine() { return engine; },
            get active() { return want; } };
 })();

@@ -98,7 +98,7 @@ def login_email(session: Session, email: str, password: str, ip: str = "") -> tu
     return user, new_session(session, user)
 
 
-def login_google(session: Session, sub: str, email: str, name: str) -> tuple[User, str, bool]:
+def login_google(session: Session, sub: str, email: str, name: str, picture: str | None = None) -> tuple[User, str, bool]:
     email = (email or "").strip().lower()
     user = session.scalars(select(User).where(User.google_sub == sub)).first()
     if user is None and email:
@@ -108,8 +108,11 @@ def login_google(session: Session, sub: str, email: str, name: str) -> tuple[Use
             session.commit()
     created = user is None
     if user is None:
-        user, secret = create_user(session, (name or email.split("@")[0] or "Друг")[:50], email=email or None, google_sub=sub)
+        user, secret = create_user(session, (name or email.split("@")[0] or "Друг")[:50], email=email or None, google_sub=sub, picture=(picture or None))
         return user, secret, True
+    if picture and user.picture != picture:
+        user.picture = picture[:500]
+        session.commit()
     return user, new_session(session, user), created
 
 

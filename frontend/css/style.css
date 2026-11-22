@@ -21,7 +21,7 @@ input,textarea,select{font:inherit;color:var(--text)}
 .mode.active{opacity:1;visibility:visible;transform:none;transition:opacity .28s var(--ease),transform .38s var(--ease),visibility 0s}
 .boot{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center;transition:opacity .4s}
 .boot.off{opacity:0;pointer-events:none}
-.boot-orb{width:64px;height:64px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,var(--cyan) 40%,var(--blue));animation:orb 1.2s ease-in-out infinite}
+.boot-orb-old{width:64px;height:64px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#fff,var(--cyan) 40%,var(--blue));animation:orb 1.2s ease-in-out infinite}
 @keyframes orb{50%{transform:scale(1.18);opacity:.75}}
 
 /* ---------- 3D-кнопки ---------- */
@@ -264,3 +264,100 @@ input,textarea,select{font:inherit;color:var(--text)}
 @media (max-height:640px){.face-slot.lg{max-height:34dvh}}
 @media (min-width:900px){.sidebar{transform:none;width:280px}.scrim{display:none}#app .mode{left:280px}}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+
+
+/* ================= v0.5 ================= */
+/* --- лицо Woody (логотип): глазки, брови, рот; моргает сам --- */
+.wface{width:100%;height:100%;display:block;overflow:visible}
+.wface .wbrow{fill:none;stroke:#06102e;stroke-width:4.2;stroke-linecap:round}
+.wface .wmouth{fill:none;stroke:#06102e;stroke-width:4.4;stroke-linecap:round}
+.wface .weye{transform-box:fill-box;transform-origin:center;animation:wblink 4.6s infinite}
+.wface .weye.er{animation-delay:.07s}
+.wface .wp{animation:wlook 7s ease-in-out infinite}
+@keyframes wblink{0%,92%,100%{transform:scaleY(1)}95%{transform:scaleY(.08)}}
+@keyframes wlook{0%,35%,100%{transform:translate(0,0)}45%,60%{transform:translate(-2px,1px)}75%,85%{transform:translate(2px,-1px)}}
+.mini-av{width:30px!important;height:30px!important;border-radius:50%;flex:none;overflow:hidden;background:none!important;margin-top:2px;box-shadow:0 2px 0 #0a5f99}
+.mini-av.sm{width:24px!important;height:24px!important;box-shadow:none}
+.uface{width:100%;height:100%;object-fit:cover;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;color:#fff}
+.uface.letter{font-size:14px}
+.avatar{overflow:hidden}.avatar .uface{font-size:18px}
+.ad-me,.ad-bubble{background:none!important;box-shadow:0 0 0 3px rgba(61,224,255,.25)}
+
+/* --- заставка: Woody появляется, подмигивает и уходит --- */
+.boot .boot-woody{width:132px;height:132px;opacity:0;transform:scale(.3) translateY(30px);filter:drop-shadow(0 10px 24px rgba(61,224,255,.35))}
+.boot.play .boot-woody{animation:bootin 2.4s both}
+.boot.play .wface .weye{animation:none}
+.boot.play .wface .weye.er{animation:bwink 2.4s both}
+.boot.play .wface .wbrow.br{animation:bbrow 2.4s both}
+.boot.play .wface .wmouth{animation:bsmile 2.4s both}
+@keyframes bootin{0%{opacity:0;transform:scale(.3) translateY(30px)}22%{opacity:1;transform:scale(1.06) translateY(0)}30%{transform:scale(1)}74%{opacity:1;transform:scale(1) translateY(0) rotate(0)}100%{opacity:0;transform:translate(160px,-40px) scale(.45) rotate(14deg)}}
+@keyframes bwink{0%,40%{transform:scaleY(1)}46%,56%{transform:scaleY(.07)}64%,100%{transform:scaleY(1)}}
+@keyframes bbrow{0%,40%{transform:translateY(0)}46%,56%{transform:translateY(5px)}64%,100%{transform:translateY(0)}}
+@keyframes bsmile{0%,38%{d:path("M36 72 Q50 82 64 72")}50%,60%{d:path("M34 70 Q50 90 66 70")}72%,100%{d:path("M36 72 Q50 82 64 72")}}
+
+/* --- боковая панель: история и группы --- */
+.side-nav{overflow-y:auto;overscroll-behavior:contain;min-height:0}
+.side-foot{border-top:1px solid var(--line);padding-top:8px;margin-top:6px;display:flex;flex-direction:column;gap:2px}
+.side-sec{display:flex;align-items:center;justify-content:space-between;margin:14px 8px 4px;color:var(--muted);font-size:12px;letter-spacing:.06em;text-transform:uppercase}
+.mini-plus{width:28px;height:28px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:var(--cyan);transition:transform .2s var(--spring),background .2s}
+.mini-plus svg{width:18px;height:18px}.mini-plus:active{transform:scale(.85);background:var(--panel)}
+.side-list{display:flex;flex-direction:column;gap:1px}
+.side-empty{margin:2px 10px 6px;color:#707070;font-size:13px}
+.side-row{display:flex;align-items:center;border-radius:12px;transition:background .2s}
+.side-row.active,.side-row:hover{background:var(--panel)}
+.side-item{flex:1;min-width:0;text-align:left;padding:10px 12px;font-size:14.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:10px}
+.side-item.grp{width:100%;border-radius:12px}
+.side-x{width:32px;height:32px;flex:none;border-radius:10px;color:#7d7d7d;display:flex;align-items:center;justify-content:center}
+.side-x svg{width:15px;height:15px}.side-x:active{color:var(--danger)}
+
+/* --- сообщения: оформление, кнопки --- */
+.msg .rich{overflow-wrap:anywhere;white-space:normal}
+.msg.user .bub{white-space:normal}
+.msg.woody .bub{white-space:normal;min-width:0;flex:1}
+.rich p{margin:0 0 .7em}.rich p:last-child{margin-bottom:0}
+.rich ul,.rich ol{margin:.2em 0 .8em;padding-left:1.3em}.rich li{margin:.2em 0}
+.rich .rh{margin:.9em 0 .4em;font-size:1.05em}.rich hr{border:0;border-top:1px solid var(--line);margin:1em 0}
+.rich b{color:#fff}.rich .ic{background:#2f2f2f;border:1px solid #3d3d3d;border-radius:6px;padding:1px 6px;font:13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#ffb86b}
+.msg.user .rich{white-space:pre-wrap}
+.code{margin:.5em 0 .9em;border-radius:14px;overflow:hidden;background:#0d1117;border:1px solid #30363d;max-width:100%}
+.code-head{display:flex;justify-content:space-between;align-items:center;padding:6px 8px 6px 14px;background:#161b22;color:#8b949e;font-size:12px;text-transform:lowercase;letter-spacing:.04em}
+.copy-code{display:flex;align-items:center;gap:6px;padding:5px 10px;border-radius:8px;color:#c9d1d9;font-size:12.5px;transition:background .2s,transform .2s var(--spring)}
+.copy-code svg{width:15px;height:15px}.copy-code:active{transform:scale(.92)}.copy-code:hover{background:#21262d}.copy-code.done{color:var(--ok)}
+.code pre{margin:0;padding:12px 14px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.code code{font:13.2px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#e6edf3;white-space:pre;tab-size:4}
+.code i{font-style:normal}.code .k{color:#ff7b72}.code .s{color:#a5d6ff}.code .c{color:#8b949e;font-style:italic}.code .n{color:#79c0ff}.code .f{color:#d2a8ff}
+.acts{display:flex;gap:2px;margin-top:6px;opacity:.75}
+.act{width:32px;height:32px;border-radius:10px;color:var(--muted);display:flex;align-items:center;justify-content:center;transition:transform .2s var(--spring),color .2s,background .2s}
+.act svg{width:17px;height:17px}.act:hover{color:var(--text);background:var(--panel)}.act:active{transform:scale(.85)}
+.act.on{color:var(--cyan)}.act.done{color:var(--ok)}
+.msg.user .acts{justify-content:flex-end}
+.msg.user .bub{display:flex;flex-direction:column}
+.msg.editing .bub{width:100%;max-width:100%;background:var(--panel)}
+.edit-ta{width:100%;resize:none;background:#1c1c1c;border:1px solid var(--line);border-radius:14px;padding:10px 12px;font-size:16px;outline:0;line-height:1.4}
+.edit-ta:focus{border-color:rgba(61,224,255,.6)}
+.edit-bar{display:flex;gap:8px;justify-content:flex-end;margin-top:8px}
+
+/* --- композер: фото и камера --- */
+.tool{width:38px;height:38px;border-radius:50%;flex:none;color:#bdbdbd;display:flex;align-items:center;justify-content:center;transition:transform .2s var(--spring),color .2s,background .2s}
+.tool svg{width:21px;height:21px}.tool:active{transform:scale(.85);color:var(--cyan);background:#3a3a3a}
+.composer{padding-left:8px;gap:4px}.composer textarea{padding-left:6px}
+.attach-prev{position:relative;display:inline-block;margin:0 0 8px 6px;animation:pop .3s var(--ease)}
+.attach-prev img{display:block;height:84px;max-width:60vw;border-radius:14px;object-fit:cover;border:1px solid var(--line)}
+.attach-prev button{position:absolute;top:-8px;right:-8px;width:24px;height:24px;border-radius:50%;background:#000;border:1px solid var(--line);display:flex;align-items:center;justify-content:center}
+.attach-prev button svg{width:13px;height:13px}
+.cam-box{width:min(92vw,480px)}.cam-box video{width:100%;border-radius:16px;background:#000;max-height:60dvh;object-fit:cover}
+.ask-input{width:100%;margin-top:12px;background:#1c1c1c;border:1px solid var(--line);border-radius:14px;padding:12px 14px;font-size:16px;outline:0}
+.ask-input:focus{border-color:rgba(61,224,255,.6)}
+
+/* --- группы --- */
+.grp-title{display:flex;align-items:center;gap:10px;min-width:0;flex:1;justify-content:center}
+.grp-title b{font-size:17px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stack{display:flex}.stack .st{width:28px;height:28px;border-radius:50%;overflow:hidden;margin-left:-8px;border:2px solid var(--bg);background:var(--bg)}.stack .st:first-child{margin-left:0}
+.grp-members{display:flex;gap:8px;overflow-x:auto;padding:0 12px 8px;flex:none;scrollbar-width:none}.grp-members::-webkit-scrollbar{display:none}
+.chip{display:flex;align-items:center;gap:6px;flex:none;background:var(--panel);border-radius:999px;padding:4px 12px 4px 4px;font-size:13px}
+.chip .wface,.chip .uface{width:22px;height:22px;flex:none}
+.grp-msg .who{font-size:12px;color:var(--cyan);margin-bottom:2px}
+.grp-msg.woody .bub{background:var(--panel);border-radius:6px 20px 20px 20px;padding:8px 14px;flex:0 1 auto;max-width:calc(100% - 42px)}
+.grp-msg.user .bub{background:#1b4b73}
+#group-view{background:var(--bg)}
+@media (min-width:900px){#app #group-view{left:280px}}

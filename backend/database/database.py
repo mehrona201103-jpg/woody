@@ -31,6 +31,8 @@ _ADDED_COLUMNS = [
     ("emotions", "user_id", "INTEGER"),
     ("knowledge", "user_id", "INTEGER"),
     ("conversations", "source", "VARCHAR(10)"),
+    ("conversations", "chat_id", "INTEGER"),
+    ("users", "picture", "VARCHAR(500)"),
 ]
 
 

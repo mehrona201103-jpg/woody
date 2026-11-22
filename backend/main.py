@@ -13,12 +13,15 @@ import asyncio
 import httpx
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from backend.actions.device import capabilities
 from backend.config import BASE_DIR, get_settings, provider_config_problems, setup_logging
 from backend.core.ai_router import AIRouter
-from backend.core.brain import PENDING, Brain, load_emotion
+from backend.core.brain import PENDING, Brain, load_emotion, split_tone
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
 from backend.core.mind import Mind
@@ -30,7 +33,7 @@ from backend.core.user_settings import UserSettings
 from backend.core.users import (AuthError, create_user, find_user_by_secret, login_email, login_google, logout as logout_session,
                                 register_email)
 from backend.database.database import SessionLocal, get_db, init_db
-from backend.database.models import User
+from backend.database.models import ChatSession, Conversation, Group, GroupMember, GroupMessage, User
 from backend.permissions.manager import ACTIONS, Decision, PermissionManager
 from backend.transfer.providers import PROVIDERS
 from backend.transfer.service import TransferError, TransferService
@@ -42,10 +45,23 @@ router = AIRouter.from_config(settings.providers)
 FRONTEND_DIR = Path(BASE_DIR) / "frontend"
 
 
+def _adopt_legacy_conversations(session: Session) -> None:
+    """Старые сообщения без чата складываем в один чат «Прошлые разговоры» на каждого пользователя."""
+    uids = session.scalars(select(Conversation.user_id).where(Conversation.chat_id.is_(None)).distinct()).all()
+    for uid in uids:
+        chat = ChatSession(user_id=uid, title="Прошлые разговоры")
+        session.add(chat)
+        session.flush()
+        session.execute(Conversation.__table__.update().where(Conversation.user_id == uid, Conversation.chat_id.is_(None)).values(chat_id=chat.id))
+    if uids:
+        session.commit()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
     with SessionLocal() as session:
+        _adopt_legacy_conversations(session)
         LearningService(session).seed()
         IdentityService(session).ensure()
         seeded = Mind(session).seed_from_file(Path(BASE_DIR) / "data" / "brain_seed.json")
@@ -66,7 +82,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.5.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -109,6 +125,24 @@ class UserBody(BaseModel):
 class ChatBody(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
     source: str = "text"
+    chat_id: int | None = None
+    image: str | None = Field(default=None, max_length=1_800_000)  # data:image/jpeg;base64,… — фото или снимок камеры
+
+
+class TruncateBody(BaseModel):
+    from_id: int
+
+
+class GroupBody(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+class MemberBody(BaseModel):
+    name: str = Field(min_length=1, max_length=50)
+
+
+class GroupMsgBody(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class PermissionBody(BaseModel):
@@ -223,7 +257,7 @@ async def auth_google(body: GoogleBody, db: Session = Depends(get_db)) -> dict:
     if not profile.get("email_verified", True) or not profile.get("sub"):
         raise HTTPException(401, {"code": "google_failed", "message": "Почта Google не подтверждена."})
     name = profile.get("given_name") or profile.get("name") or ""
-    user, secret, created = login_google(db, profile["sub"], profile.get("email", ""), name)
+    user, secret, created = login_google(db, profile["sub"], profile.get("email", ""), name, profile.get("picture"))
     return {"session": secret, "name": user.name, "new": created}
 
 
@@ -254,6 +288,7 @@ def _user_payload(db: Session, user: User | None) -> dict:
         "registered": True,
         "name": user.name,
         "email": user.email,
+        "picture": user.picture,
         "settings": UserSettings(db, user.id).all(),
         "state": emotion.state("idle"),
         "face": emotion.face_state(),
@@ -298,8 +333,61 @@ def status(user: User | None = Depends(get_user_optional), db: Session = Depends
 
 
 # ------------------------------------------------------------------ chat / voice
+def _own_chat(db: Session, user: User, chat_id: int | None, title_hint: str = "") -> ChatSession:
+    """Возвращает чат пользователя; если chat_id нет — создаёт новый."""
+    if chat_id:
+        chat = db.get(ChatSession, chat_id)
+        if chat is None or chat.user_id != user.id:
+            raise HTTPException(404, {"code": "no_chat", "message": "Чат не найден."})
+        return chat
+    chat = ChatSession(user_id=user.id, title=(title_hint.strip().replace("\n", " ")[:40] or "Новый чат"))
+    db.add(chat)
+    db.commit()
+    return chat
+
+
+async def _see(body: ChatBody, user: User, db: Session, chat: ChatSession) -> dict:
+    """Woody разглядывает присланное фото/снимок и отвечает на вопрос к нему. Сам кадр нигде не хранится."""
+    if not body.image or not body.image.startswith("data:image/"):
+        raise HTTPException(422, {"code": "bad_image", "message": "Нужно изображение."})
+    memory = MemoryService(db)
+    memory.chat_id = chat.id
+    memory.add_message(user.id, "USER", "📷 " + body.text.strip(), body.source)
+    messages = [
+        {"role": "system", "content": f"Ты — Woody, дружелюбный помощник. Пользователя зовут {user.name}. Внимательно рассмотри изображение, распознай что на нём "
+                                      "(предметы, люди в общих чертах, текст, код, ошибки) и ответь по-русски по делу. Если на фото код или задача — реши её."},
+        {"role": "user", "content": [{"type": "text", "text": body.text.strip()}, {"type": "image_url", "image_url": {"url": body.image}}]},
+    ]
+    reply, error = None, False
+    for task in ("vision", "conversation"):
+        try:
+            reply, _ = await router.complete(messages, task=task)
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Vision (%s) недоступен: %s", task, exc)
+    if reply is None:
+        reply, error = "Сейчас я не могу разглядеть фото: модель с поддержкой изображений недоступна.", True
+    memory.add_message(user.id, "WOODY", reply, body.source)
+    emotion = load_emotion(db, user.id)
+    state = emotion.state("speaking")
+    state["emotion"] = "confused" if error else "happy"
+    return {"reply": reply, "state": state, "tone": "calm", "error": "vision_unavailable" if error else None, "chat_id": chat.id, "ids": memory.last_ids}
+
+
 async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -> dict:
-    return await Brain(db, router).handle(user, body.text.strip(), source)
+    chat = _own_chat(db, user, body.chat_id, body.text)
+    if body.image:
+        result = await _see(body, user, db, chat)
+    else:
+        brain = Brain(db, router)
+        result = await brain.handle(user, body.text.strip(), source, chat.id)
+        result["chat_id"] = chat.id
+        result["ids"] = dict(brain.memory.last_ids)
+    chat.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    if chat.title == "Новый чат":
+        chat.title = body.text.strip().replace("\n", " ")[:40] or chat.title
+    db.commit()
+    return result
 
 
 @app.post("/api/chat")
@@ -312,12 +400,162 @@ async def voice(body: ChatBody, user: User = Depends(require_user), db: Session 
     """Текст, распознанный браузером (STT выполняется на устройстве). Дальше — тот же Woody Core."""
     if not UserSettings(db, user.id).get("microphone_enabled"):
         raise HTTPException(403, {"code": "mic_disabled", "message": "Микрофон отключён в настройках."})
+    body.image = None
     return await _chat(body, user, db, "voice")
 
 
 @app.get("/api/history")
 def history(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
     return [{"role": r.role, "text": r.text} for r in MemoryService(db).recent_messages(user.id, 60, include_voice=True)]
+
+
+# ------------------------------------------------------------------ история чатов (как в ChatGPT)
+@app.get("/api/chats")
+def list_chats(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(select(ChatSession).where(ChatSession.user_id == user.id).order_by(ChatSession.updated_at.desc()).limit(200))
+    return [{"id": c.id, "title": c.title} for c in rows]
+
+
+@app.post("/api/chats")
+def new_chat(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    chat = _own_chat(db, user, None)
+    return {"id": chat.id, "title": chat.title}
+
+
+@app.get("/api/chats/{chat_id}/messages")
+def chat_messages(chat_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    _own_chat(db, user, chat_id)
+    rows = db.scalars(select(Conversation).where(Conversation.user_id == user.id, Conversation.chat_id == chat_id).order_by(Conversation.id))
+    return [{"id": r.id, "role": r.role, "text": r.text} for r in rows]
+
+
+@app.put("/api/chats/{chat_id}")
+def rename_chat(chat_id: int, body: GroupBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    chat = _own_chat(db, user, chat_id)
+    chat.title = body.name.strip()[:100]
+    db.commit()
+    return {"id": chat.id, "title": chat.title}
+
+
+@app.delete("/api/chats/{chat_id}")
+def delete_chat(chat_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    chat = _own_chat(db, user, chat_id)
+    db.execute(delete(Conversation).where(Conversation.user_id == user.id, Conversation.chat_id == chat_id))
+    db.delete(chat)
+    db.commit()
+    return {"deleted": chat_id}
+
+
+@app.post("/api/chats/{chat_id}/truncate")
+def truncate_chat(chat_id: int, body: TruncateBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    """Изменение сообщения: удаляем его и всё после него — потом фронтенд отправляет исправленный текст заново."""
+    _own_chat(db, user, chat_id)
+    res = db.execute(delete(Conversation).where(Conversation.user_id == user.id, Conversation.chat_id == chat_id, Conversation.id >= body.from_id))
+    db.commit()
+    return {"removed": res.rowcount}
+
+
+# ------------------------------------------------------------------ групповые чаты (Woody состоит в каждой группе)
+def _member(db: Session, group_id: int, user: User) -> Group:
+    group = db.get(Group, group_id)
+    ok = group is not None and db.scalars(select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id == user.id)).first()
+    if not ok:
+        raise HTTPException(404, {"code": "no_group", "message": "Группа не найдена."})
+    return group
+
+
+def _members_payload(db: Session, group_id: int) -> list[dict]:
+    rows = db.scalars(select(User).join(GroupMember, GroupMember.user_id == User.id).where(GroupMember.group_id == group_id).order_by(User.id))
+    return [{"id": u.id, "name": u.name, "picture": u.picture} for u in rows]
+
+
+def _msg_payload(m: GroupMessage) -> dict:
+    return {"id": m.id, "user_id": m.user_id, "text": m.text}
+
+
+@app.get("/api/groups")
+def list_groups(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    rows = db.scalars(select(Group).join(GroupMember, GroupMember.group_id == Group.id).where(GroupMember.user_id == user.id).order_by(Group.id.desc()))
+    return [{"id": g.id, "name": g.name} for g in rows]
+
+
+@app.post("/api/groups")
+def create_group(body: GroupBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    group = Group(name=body.name.strip(), owner_id=user.id)
+    db.add(group)
+    db.flush()
+    db.add(GroupMember(group_id=group.id, user_id=user.id))
+    db.commit()
+    return {"id": group.id, "name": group.name}
+
+
+@app.get("/api/groups/{group_id}")
+def group_info(group_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    group = _member(db, group_id, user)
+    return {"id": group.id, "name": group.name, "me": user.id, "members": _members_payload(db, group_id)}
+
+
+@app.post("/api/groups/{group_id}/members")
+def add_member(group_id: int, body: MemberBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    _member(db, group_id, user)
+    found = db.scalars(select(User).where(func.lower(User.name) == body.name.strip().lower())).all()
+    if not found:
+        raise HTTPException(404, {"code": "no_user", "message": f"Не нашёл пользователя «{body.name.strip()}». Проверь имя."})
+    if len(found) > 1:
+        raise HTTPException(409, {"code": "ambiguous", "message": "Людей с таким именем несколько — попроси человека сменить имя в настройках на уникальное."})
+    target = found[0]
+    if db.scalars(select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id == target.id)).first():
+        raise HTTPException(409, {"code": "already", "message": f"{target.name} уже в группе."})
+    db.add(GroupMember(group_id=group_id, user_id=target.id))
+    db.commit()
+    return {"members": _members_payload(db, group_id)}
+
+
+@app.delete("/api/groups/{group_id}")
+def leave_group(group_id: int, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    _member(db, group_id, user)
+    db.execute(delete(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id == user.id))
+    db.commit()
+    return {"left": group_id}
+
+
+@app.get("/api/groups/{group_id}/messages")
+def group_messages(group_id: int, after: int = 0, user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    _member(db, group_id, user)
+    rows = db.scalars(select(GroupMessage).where(GroupMessage.group_id == group_id, GroupMessage.id > after).order_by(GroupMessage.id).limit(200))
+    return [_msg_payload(m) for m in rows]
+
+
+@app.post("/api/groups/{group_id}/messages")
+async def post_group_message(group_id: int, body: GroupMsgBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    """Сообщение участника + ответ Woody. Woody общается со всеми одинаково и пользуется общим мозгом."""
+    group = _member(db, group_id, user)
+    mine = GroupMessage(group_id=group_id, user_id=user.id, text=body.text.strip())
+    db.add(mine)
+    db.commit()
+    names = {u["id"]: u["name"] for u in _members_payload(db, group_id)}
+    recent = list(reversed(db.scalars(select(GroupMessage).where(GroupMessage.group_id == group_id).order_by(GroupMessage.id.desc()).limit(14)).all()))
+    convo = [{"role": "assistant" if m.user_id is None else "user",
+              "content": m.text if m.user_id is None else f"{names.get(m.user_id, 'Кто-то')}: {m.text}"} for m in recent]
+    system = (f"Ты — Woody, участник группового чата «{group.name}». В чате люди: {', '.join(names.values())}. "
+              "Отвечай по-русски коротко и дружелюбно, обращайся к тому, кто написал, по имени. Ко всем относись одинаково. "
+              "Код пиши в блоках ```язык.")
+    mind = Mind(db)
+    known = mind.recall(body.text, 0.9)
+    if known:
+        reply = known[0]
+    else:
+        try:
+            reply, _ = await router.complete([{"role": "system", "content": system}, *convo])
+            reply, _tone = split_tone(reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Woody в группе: AI недоступен: %s", exc)
+            fb = mind.recall(body.text, 0.45)
+            reply = fb[0] if fb else "Сейчас я не могу ответить — у моего AI-ключа проблема. Попробуйте позже."
+    answer = GroupMessage(group_id=group_id, user_id=None, text=reply)
+    db.add(answer)
+    db.commit()
+    return [_msg_payload(mine), _msg_payload(answer)]
 
 
 # ------------------------------------------------------------------ permissions
@@ -380,6 +618,8 @@ def delete_memory(memory_id: int, user: User = Depends(require_user), db: Sessio
 @app.delete("/api/memory")
 def clear_memory(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
     MemoryService(db).clear(user.id)
+    db.execute(delete(ChatSession).where(ChatSession.user_id == user.id))
+    db.commit()
     PENDING.pop(user.id, None)
     return {"cleared": True}
 

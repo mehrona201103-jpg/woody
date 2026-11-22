@@ -38,6 +38,8 @@ def extract_facts(text: str) -> list[tuple[str, str, str]]:
 class MemoryService:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self.chat_id: int | None = None          # текущий чат: сообщения и контекст привязаны к нему
+        self.last_ids: dict[str, int] = {}
 
     def is_enabled(self, user_id: int) -> bool:
         return UserSettings(self.session, user_id).get("memory_enabled")
@@ -91,11 +93,15 @@ class MemoryService:
 
     def add_message(self, user_id: int, role: str, text: str, source: str = "text") -> None:
         if self.is_enabled(user_id):
-            self.session.add(Conversation(user_id=user_id, role=role, text=text, source=source))
+            row = Conversation(user_id=user_id, role=role, text=text, source=source, chat_id=self.chat_id)
+            self.session.add(row)
             self.session.commit()
+            self.last_ids[role] = row.id
 
     def recent_messages(self, user_id: int, limit: int = 10, include_voice: bool = True) -> list[Conversation]:
         query = select(Conversation).where(Conversation.user_id == user_id)
+        if self.chat_id is not None:
+            query = query.where(Conversation.chat_id == self.chat_id)
         if not include_voice:  # голосовые разговоры Woody «держит в себе» — в чате их нет
             query = query.where((Conversation.source.is_(None)) | (Conversation.source != "voice"))
         rows = self.session.scalars(query.order_by(Conversation.id.desc()).limit(limit))

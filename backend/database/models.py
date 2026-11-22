@@ -44,6 +44,7 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(200), nullable=True, unique=True, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(300), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    picture: Mapped[str | None] = mapped_column(String(500), nullable=True)  # фото из Google-аккаунта
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -120,6 +121,7 @@ class Conversation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     role: Mapped[str] = mapped_column(String(10))  # USER / WOODY
     text: Mapped[str] = mapped_column(Text)
+    chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     source: Mapped[str | None] = mapped_column(String(10), nullable=True)  # text / voice (голосовые не показываются в чате)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
@@ -159,3 +161,42 @@ class LearnedAnswer(Base):
     uses: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     last_used: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# ---------------------------------------------------------------- история чатов и группы
+class ChatSession(Base):
+    """Отдельный разговор пользователя с Woody (как «чаты» в ChatGPT)."""
+
+    __tablename__ = "chat_sessions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(120), default="Новый чат")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class Group(Base):
+    __tablename__ = "groups"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(60))
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class GroupMember(Base):
+    __tablename__ = "group_members"
+    __table_args__ = (UniqueConstraint("group_id", "user_id", name="uq_group_member"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+
+
+class GroupMessage(Base):
+    """user_id = NULL — сообщение от Woody (он состоит в каждой группе автоматически)."""
+
+    __tablename__ = "group_messages"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

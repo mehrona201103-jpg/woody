@@ -102,7 +102,8 @@ class Brain:
             **extra,
         }
 
-    async def handle(self, user: User, text: str, source: str = "text") -> dict[str, Any]:
+    async def handle(self, user: User, text: str, source: str = "text", chat_id: int | None = None) -> dict[str, Any]:
+        self.memory.chat_id = chat_id
         self.permissions = PermissionManager(self.session, user.id)
         emotion = load_emotion(self.session, user.id)
         self.memory.add_message(user.id, "USER", text, source)
@@ -160,6 +161,9 @@ class Brain:
             self.learning.context_lines(user.id),
             persona=self.identity.personality(),
         )
+        if source != "voice":
+            system += ("\n\nЕсли просят код — пиши полностью рабочий, проверенный и без ошибок код, обязательно в блоке ```язык … ```, "
+                       "с короткими комментариями и краткой подсказкой, как запустить. Ответы оформляй аккуратно: абзацы, списки, **жирный** для главного.")
         if source == "voice":
             system += "\n\nСейчас голосовой разговор: отвечай одной-двумя короткими живыми фразами, как человек в разговоре."
         history = [
