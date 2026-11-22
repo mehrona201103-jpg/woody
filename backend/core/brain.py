@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,15 @@ from backend.core.emotion import EmotionState, PARAMS, detect_events
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
 from backend.core.memory import MemoryService
+from backend.core.mind import Mind, cacheable, try_math
+from backend.core.selflearn import LEARNER
 from backend.core.personality import build_system_prompt
+from backend.core.user_settings import UserSettings
 from backend.database.models import Emotion, User
 from backend.permissions.confirmation import parse_confirmation
 from backend.permissions.manager import PermissionManager
+from backend.database.database import SessionLocal
+from backend.config import get_settings
 
 logger = logging.getLogger("woody.brain")
 
@@ -35,6 +41,17 @@ class PendingAction:
 
 # Ожидающие подтверждения действия по user.id (один процесс; для MVP достаточно).
 PENDING: dict[int, PendingAction] = {}
+
+CREATOR_REPLY = "Меня создал 17-летний мальчик Ибрагимов Мухаммад. Я постоянно учусь и развиваюсь вместе с вами."
+_CREATOR_Q = re.compile(
+    r"(кто|кем)\b.{0,30}\b(созда|сдела|разработ|написа|придума|programmed|made|built|created)|"
+    r"\b(твой|ваш)\s+(создател|автор|разработчик|отец|папа|хозяин)|who\s+(made|created|built|developed)\s+you|"
+    r"(ты|вы)\s+(от|из|продукт|модель)?\s*(openai|опенай|chatgpt|чатгпт|чат\s*gpt|gpt)",
+    re.IGNORECASE,
+)
+_ABOUT_YOU = re.compile(r"\b(тебя|тебе|тобой|ты|вас|вам|вуди|woody|you|твой|твоя|ваш)\b", re.IGNORECASE)
+_LEARN_START = re.compile(r"(обучай|обучись|учи|учись|изучай|изучи|прокачай)\w*\s+(сам[а-я]*\s+)?(себя|сам)|(?:^|[\s,])(учись|обучайся|изучай мир)", re.IGNORECASE)
+_LEARN_STOP = re.compile(r"(хватит|прекрати|перестань|останови|стоп)\w*.{0,20}(учи|обуч|изуч)", re.IGNORECASE)
 
 
 def load_emotion(session: Session, user_id: int) -> EmotionState:
@@ -72,27 +89,56 @@ class Brain:
             **extra,
         }
 
-    async def handle(self, user: User, text: str) -> dict[str, Any]:
+    async def handle(self, user: User, text: str, source: str = "text") -> dict[str, Any]:
         self.permissions = PermissionManager(self.session, user.id)
         emotion = load_emotion(self.session, user.id)
-        self.memory.add_message(user.id, "USER", text)
+        self.memory.add_message(user.id, "USER", text, source)
+        mind = Mind(self.session)
+
+        def finish(reply: str, **extra: Any) -> dict[str, Any]:
+            self.memory.add_message(user.id, "WOODY", reply, source)
+            save_emotion(self.session, user.id, emotion)
+            return self._result(reply, emotion, **extra)
 
         pending = PENDING.get(user.id)
         if pending:
             reply = self._resolve_pending(user, pending, text, emotion)
             if reply is not None:
-                self.memory.add_message(user.id, "WOODY", reply)
-                save_emotion(self.session, user.id, emotion)
-                return self._result(reply, emotion)
+                return finish(reply)
 
         action_reply = self._detect_action(user, text)
         if action_reply is not None:
-            self.memory.add_message(user.id, "WOODY", action_reply)
+            self.memory.add_message(user.id, "WOODY", action_reply, source)
             return self._result(action_reply, emotion, awaiting_confirmation=user.id in PENDING)
+
+        # --- Woody про себя: создатель, самообучение, простая арифметика (без траты лимита ключа)
+        if _CREATOR_Q.search(text) and _ABOUT_YOU.search(text):
+            emotion.apply("helped_user")
+            return finish(CREATOR_REPLY, face="happy")
+        if _LEARN_STOP.search(text):
+            LEARNER.stop()
+            return finish("Хорошо, заканчиваю учиться.", learning=False)
+        if _LEARN_START.search(text):
+            started = LEARNER.start(self.router, SessionLocal, get_settings().self_learn_max)
+            if started:
+                return finish("Закрываю глазки и начинаю учиться. Я буду изучать мир, пока у ключа не кончится лимит, а потом отвечу всё, что запомнил.", learning=True)
+            if LEARNER.active:
+                return finish("Я уже учусь. Скажи «хватит учиться», когда захочешь остановить.", learning=True)
+            return finish("Мне не к чему подключиться, чтобы учиться: ключ AI не настроен.", face="confused", learning=False)
+        calc = try_math(text)
+        if calc is not None:
+            emotion.apply("task_success")
+            return finish(f"Это будет {calc}.", provider="calc")
 
         for event in detect_events(text):
             emotion.apply(event)
         self.memory.learn_from_text(user.id, text)
+
+        # --- сначала собственный мозг: если вопрос почти точно знаком — отвечаем сами и экономим лимит ключа
+        known = mind.recall(text, 0.9)
+        if known:
+            emotion.decay(0.05)
+            return finish(known[0], provider="brain")
 
         system = build_system_prompt(
             user.name,
@@ -114,15 +160,25 @@ class Brain:
             emotion.apply("task_success")
         except AIUnavailable as exc:
             logger.error("AI недоступен: %s", exc)
+            # Лимит закончился или сеть пропала — Woody ищет подходящий ответ в своём мозге.
+            fallback = mind.recall(text, 0.45)
+            if fallback:
+                emotion.decay(0.05)
+                return finish(fallback[0], provider="brain")
             emotion.apply("task_failure")
             emotion.decay()
             save_emotion(self.session, user.id, emotion)
-            msg = f"{user.name}, сейчас я не могу связаться с AI-моделью. Попробуй позже или проверь настройки провайдеров."
+            if getattr(exc, "quota", False):
+                msg = f"{user.name}, у моего ключа закончился лимит, а этого я ещё не выучил. Спроси позже — я запомню, когда смогу."
+            else:
+                msg = f"{user.name}, сейчас я не могу связаться с AI-моделью, а в моём мозге такого ответа нет. Попробуй позже."
             return self._result(msg, emotion, face="confused", error="ai_unavailable")
 
+        if cacheable(text, reply) and UserSettings(self.session, user.id).get("learn_from_chats"):
+            mind.remember(text, reply, "AI")  # Woody запоминает то, чего не знал
         emotion.decay(0.05)
         save_emotion(self.session, user.id, emotion)
-        self.memory.add_message(user.id, "WOODY", reply)
+        self.memory.add_message(user.id, "WOODY", reply, source)
         return self._result(reply, emotion, provider=provider)
 
     # --- действия -----------------------------------------------------------------

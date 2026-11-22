@@ -27,6 +27,9 @@ services:
       #   value: /var/data/woody.db
       # - key: WOODY_SHARED_DIR
       #   value: /var/data/shared
+      # Чтобы база не стиралась — вставьте строку подключения Postgres (Neon/Supabase):
+      - key: DATABASE_URL
+        sync: false
       - key: WOODY_ACCESS_TOKEN      # пароль доступа: сгенерирует Render
         generateValue: true
       # Секреты — вводятся в Dashboard вручную (sync: false), в репозиторий не попадают:

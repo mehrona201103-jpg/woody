@@ -89,13 +89,14 @@ class MemoryService:
             self.session.execute(delete(Conversation).where(Conversation.user_id == user_id))
         self.session.commit()
 
-    def add_message(self, user_id: int, role: str, text: str) -> None:
+    def add_message(self, user_id: int, role: str, text: str, source: str = "text") -> None:
         if self.is_enabled(user_id):
-            self.session.add(Conversation(user_id=user_id, role=role, text=text))
+            self.session.add(Conversation(user_id=user_id, role=role, text=text, source=source))
             self.session.commit()
 
-    def recent_messages(self, user_id: int, limit: int = 10) -> list[Conversation]:
-        rows = self.session.scalars(
-            select(Conversation).where(Conversation.user_id == user_id).order_by(Conversation.id.desc()).limit(limit)
-        )
+    def recent_messages(self, user_id: int, limit: int = 10, include_voice: bool = True) -> list[Conversation]:
+        query = select(Conversation).where(Conversation.user_id == user_id)
+        if not include_voice:  # голосовые разговоры Woody «держит в себе» — в чате их нет
+            query = query.where((Conversation.source.is_(None)) | (Conversation.source != "voice"))
+        rows = self.session.scalars(query.order_by(Conversation.id.desc()).limit(limit))
         return list(reversed(list(rows)))

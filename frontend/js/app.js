@@ -2,7 +2,7 @@
   const $ = (id) => document.getElementById(id);
   const api = Api.request;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-  let settings = { memory_enabled: true, camera_enabled: true, microphone_enabled: true, hand_tracking_enabled: true, transfer_enabled: true, voice_replies: true };
+  let settings = { memory_enabled: true, camera_enabled: true, microphone_enabled: true, hand_tracking_enabled: true, transfer_enabled: true, voice_replies: true, always_on_camera: true, learn_from_chats: true, voice_engine: "natural", voice_name: "coral" };
   let transferBusy = false;
 
   // ---------------------------------------------------------------- баннер / health
@@ -46,6 +46,7 @@
         Api.setSession(res.session);
         await intro.say(res.greeting, "excited");
         intro.hide(); Face.setEmotion("neutral");
+        startCamera("auto");
         return;
       } catch (e) { intro.error(e.userMessage || "Не удалось подключиться к Woody."); await sleep(1500); }
     }
@@ -68,8 +69,11 @@
     if (!user.registered) { Api.clearSession(); return firstRun(); }
     settings = { ...settings, ...user.settings };
     Voice.setVoiceReplies(settings.voice_replies);
+    Voice.configure(settings);
     Face.applyState(user.state);
     await Chat.loadHistory();
+    Learn.resume();
+    startCamera("auto");   // глаза Woody: камера включена всегда, если разрешено
     try { const st = await api("/status"); if (!st.providers.length) Chat.add("woody", "AI-провайдеры не настроены (Settings → AI Providers). Пока я не смогу отвечать.", true); } catch (_) { /* не критично */ }
   }
   $("banner-retry").onclick = boot;
@@ -103,7 +107,7 @@
     Face.setActivity("idle"); Chat.setStatus(""); talk.classList.remove("active");
   };
 
-  // ---------------------------------------------------------------- жесты / передача
+  // ---------------------------------------------------------------- глаза: камера, жесты, приглашение
   async function onFist() {
     if (transferBusy || Chat.busy) return;
     transferBusy = true;
@@ -116,18 +120,59 @@
     finally { transferBusy = false; setTimeout(() => Face.setEmotion("neutral"), 2500); }
   }
 
+  function onInvite() {          // 👍 или 👆 перед камерой
+    if (!settings.transfer_enabled || Invite.open || Chat.busy) return;
+    Face.flash("excited", 1200);
+    Voice.speak("Ага, вижу! Сейчас отправлю приглашение.", { rate: 1.05 });
+    Invite.start();
+  }
+
+  let lastWave = 0;
+  function onWave() {            // человек машет рукой — Woody здоровается
+    if (Chat.busy || Learn.active || Date.now() - lastWave < 15000) return;
+    lastWave = Date.now();
+    Face.flash("happy", 1800);
+    Voice.speak("Привет! Я тебя вижу.", { rate: 1.05 });
+  }
+
   function stopGesture() { HandTracker.stop(); $("btn-gesture").classList.remove("on"); }
+
+  /** mode: "user" — по просьбе человека (с объяснениями); "auto" — при запуске: спросит разрешение один раз, запрет не обсуждает;
+      "silent" — только если уже разрешено. */
+  async function startCamera(mode = "user") {
+    if (HandTracker.active) return true;
+    if (!settings.camera_enabled || (mode !== "user" && !settings.always_on_camera)) return false;
+    const say = (t) => { if (mode === "user") Chat.add("woody", t); };
+    try {
+      const { status } = await api("/permissions/camera/check", { method: "POST" });
+      if (status === "denied") { say("Камера запрещена в разрешениях. Я продолжу общаться голосом и в чате."); return false; }
+      if (status === "ask") {
+        if (mode === "silent") return false;
+        const ok = await Permissions.ensure("camera", "Woody хочет использовать фронтальную камеру, чтобы видеть тебя и твои жесты. Видео остаётся на устройстве.", "two");
+        if (!ok) { say("Камера запрещена. Я продолжу общаться голосом и в чате."); return false; }
+      }
+      const on = settings.hand_tracking_enabled;
+      await HandTracker.start({ onFist: on ? onFist : null, onInvite: on ? onInvite : null, onWave: on ? onWave : null });
+      $("btn-gesture").classList.add("on");
+      return true;
+    } catch (e) { console.error("[Woody camera]", e); stopGesture(); if (mode !== "silent") Chat.add("woody", e.message || "Не удалось включить камеру.", true); return false; }
+  }
 
   $("btn-gesture").onclick = async () => {
     if (HandTracker.active) return stopGesture();
-    if (!settings.camera_enabled || !settings.hand_tracking_enabled) { Chat.add("woody", "Камера или Hand Tracking выключены в настройках.", true); return; }
-    try {
-      const ok = await Permissions.ensure("camera", "Woody хочет использовать фронтальную камеру для распознавания жестов.", "two");
-      if (!ok) { Chat.add("woody", "Камера запрещена, жесты не работают. Я продолжу общаться голосом и в чате."); return; }
-      await HandTracker.start(onFist);
-      $("btn-gesture").classList.add("on");
-    } catch (e) { console.error("[Woody gesture]", e); stopGesture(); Chat.add("woody", e.message || "Не удалось включить камеру.", true); }
+    if (!settings.camera_enabled) { Chat.add("woody", "Камера выключена в настройках.", true); return; }
+    await startCamera("user");
   };
+  Device.hooks.camera = async (on) => { if (on) await startCamera("user"); else stopGesture(); };
+  Device.hooks.invite = () => Invite.start();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && settings.always_on_camera && !HandTracker.active && Api.hasSession()) startCamera("silent"); });
+
+  // Первое включение: один раз просим всё нужное, чтобы дальше Woody не отвлекал вопросами
+  async function allowAll() {
+    const perms = await api("/permissions");
+    for (const p of perms) if (!p.dangerous && p.decision !== "ALLOW_ALWAYS") await api("/permissions", { method: "POST", body: JSON.stringify({ action: p.action, decision: "ALLOW_ALWAYS" }) });
+    await startCamera("silent");
+  }
 
   // ---------------------------------------------------------------- настройки
   const drawer = $("settings"), body = $("settings-body");
@@ -154,18 +199,63 @@
       const [perms, status, mem] = await Promise.all([api("/permissions"), api("/status"), api("/memory")]);
       settings = { ...settings, ...status.settings };
 
+      body.append(section("Доступ"));
+      const all = h("button", { textContent: "Разрешить Woody всё (кроме удаления файлов)", className: "primary wide" });
+      all.onclick = async () => { await allowAll(); renderSettings(); };
+      body.append(all);
+      body.append(note("Woody делает на устройстве только то, что разрешено ниже. Удаление файлов всегда требует отдельного подтверждения. Браузер не даёт сайтам управлять системой — только камера, микрофон, геолокация, уведомления, буфер обмена и т. п."));
+
       body.append(section("Camera"));
-      body.append(toggleRow("Камера разрешена", "camera_enabled", (on) => { if (!on) stopGesture(); }));
+      body.append(toggleRow("Камера разрешена", "camera_enabled", (on) => { if (!on) stopGesture(); else startCamera("silent"); }));
+      body.append(toggleRow("Камера всегда включена (глаза следят)", "always_on_camera", (on) => { if (!on) stopGesture(); else startCamera("user"); }));
       body.append(section("Microphone"));
       body.append(toggleRow("Микрофон разрешён", "microphone_enabled", (on) => { if (!on) Voice.abortListening(); }));
       body.append(section("Voice"));
       body.append(toggleRow("Отвечать голосом", "voice_replies", (on) => Voice.setVoiceReplies(on)));
+      const engine = h("select");
+      for (const [v, l] of [["natural", "Человеческий голос (сервер)"], ["browser", "Голос браузера"]]) engine.append(h("option", { value: v, textContent: l, selected: settings.voice_engine === v }));
+      engine.onchange = async () => { settings = { ...settings, ...(await api("/settings", { method: "PUT", body: JSON.stringify({ voice_engine: engine.value }) })) }; Voice.configure(settings); };
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Тип голоса" }), engine));
+      const vsel = h("select");
+      for (const [v, l] of [["coral", "Коралл (женский, тёплый)"], ["nova", "Нова (женский, живой)"], ["shimmer", "Шиммер (женский, мягкий)"], ["sage", "Сейдж (спокойный)"], ["alloy", "Эллой (нейтральный)"], ["ash", "Эш (мужской)"], ["echo", "Эхо (мужской)"], ["onyx", "Оникс (мужской, низкий)"]]) vsel.append(h("option", { value: v, textContent: l, selected: settings.voice_name === v }));
+      vsel.onchange = async () => { settings = { ...settings, ...(await api("/settings", { method: "PUT", body: JSON.stringify({ voice_name: vsel.value }) })) }; Voice.configure(settings); Voice.speak("Привет! Вот так я теперь говорю.", {}); };
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Голос" }), vsel));
+      const bv = Voice.ruVoices();
+      if (bv.length) {
+        const bsel = h("select");
+        for (const v of bv) bsel.append(h("option", { value: v.voiceURI, textContent: v.name, selected: v.voiceURI === Voice.browserVoiceURI }));
+        bsel.onchange = () => { Voice.setBrowserVoice(bsel.value); Voice.configure({ voice_engine: "browser" }); };
+        body.append(h("div", { className: "row" }, h("span", { textContent: "Голос браузера" }), bsel));
+      }
       body.append(note(`Распознавание речи: ${Voice.supported.stt ? "доступно" : "недоступно в этом браузере"}. Синтез речи: ${Voice.supported.tts ? "доступен" : "недоступен"}.`));
 
       body.append(section("Gestures"));
       body.append(toggleRow("Hand Tracking", "hand_tracking_enabled", (on) => { if (!on) stopGesture(); }));
       body.append(toggleRow("Передача Woody (Transfer)", "transfer_enabled"));
       body.append(note("Кнопка ✋ включает камеру для жестов. Открытая ладонь → медленно сжать кулак: Woody покажет QR для знакомства с новым человеком. Видео не покидает устройство."));
+
+      body.append(section("Мозг Woody"));
+      const br = status.brain || { total: 0, from_ai: 0, self_taught: 0 };
+      body.append(note(`Выучено ответов: ${br.total} (из разговоров: ${br.from_ai}, самообучение: ${br.self_taught}). Когда лимит ключа закончится, я отвечаю из этого мозга.`));
+      body.append(toggleRow("Учиться на вопросах пользователей", "learn_from_chats"));
+      const lb = h("button", { textContent: Learn.active ? "■ Остановить обучение" : "🧠 Обучай самого себя", className: "ghost wide" });
+      lb.onclick = async () => { if (Learn.active) { await Learn.stop(); } else { await api("/learn/start", { method: "POST" }); Learn.begin(); drawer.classList.add("hidden"); } };
+      body.append(lb);
+      const ex = h("button", { textContent: "Сохранить мозг в файл", className: "ghost wide" });
+      ex.onclick = async () => {
+        const data = await api("/brain/export");
+        const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));
+        const a = h("a", { href: url, download: "brain_seed.json" }); document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      };
+      const im = h("button", { textContent: "Загрузить мозг из файла", className: "ghost wide" });
+      im.onclick = () => {
+        const inp = h("input", { type: "file", accept: "application/json" });
+        inp.onchange = async () => { try { const d = JSON.parse(await inp.files[0].text()); const r = await api("/brain/import", { method: "POST", body: JSON.stringify({ items: d.items || [] }) }); Chat.add("woody", `Добавил в мозг ${r.added} новых ответов.`); renderSettings(); } catch (e) { Chat.add("woody", "Не удалось прочитать файл мозга.", true); } };
+        inp.click();
+      };
+      body.append(ex, im);
+      body.append(note(status.persistent ? "База данных постоянная: память и мозг переживают перезапуск и деплой." : "⚠ База НЕ постоянная: при деплое всё сотрётся. Подключите Volume или DATABASE_URL (см. README) либо сохраните мозг в файл."));
+      if (!status.persistent) body.lastChild.classList.add("warn");
 
       body.append(section("Memory"));
       body.append(toggleRow("Запоминать разговоры", "memory_enabled"));

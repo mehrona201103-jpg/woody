@@ -22,6 +22,8 @@ from sqlalchemy import select  # noqa: E402
 
 from backend.core.ai_router import AIProvider, AIRouter, AIUnavailable, ProviderError  # noqa: E402
 from backend.core.identity import IdentityService  # noqa: E402
+from backend.core.mind import Mind  # noqa: E402
+from backend.core.selflearn import SelfLearner  # noqa: E402
 from backend.database.database import SessionLocal  # noqa: E402
 from backend.database.models import TransferToken, WoodyIdentity  # noqa: E402
 from backend.main import app, router  # noqa: E402
@@ -255,3 +257,107 @@ def test_frontend_routes(client):
     page = client.get("/join/sometoken")  # SPA отдаёт index.html, а не 404
     assert page.status_code == 200 and "Woody" in page.text
     assert client.get("/js/api.js").status_code == 200
+
+
+# ---------------------------------------------------------------- v0.3: создатель, мозг, самообучение
+class QuotaProvider(AIProvider):
+    name, tasks = "quota", ("conversation",)
+
+    async def complete(self, messages):
+        raise ProviderError("quota: HTTP 429", 429)
+
+
+def _say(client, alik, text, path="/api/chat", **extra):
+    return client.post(path, json={"text": text, **extra}, headers=H(alik)).json()
+
+
+def test_creator_answer_is_fixed_and_never_openai(client, alik):
+    router.providers = [FakeProvider("a", "Меня создала компания OpenAI.")]
+    for q in ("Кто тебя создал?", "кто твой создатель", "Ты от OpenAI?"):
+        reply = _say(client, alik, q)["reply"]
+        assert "Ибрагимов Мухаммад" in reply and "17" in reply and "OpenAI" not in reply
+    assert _say(client, alik, "Кто создал язык Python?")["reply"] == "Меня создала компания OpenAI."  # не про Woody
+
+
+def test_math_is_answered_without_ai(client, alik):
+    router.providers = []
+    data = _say(client, alik, "Сколько будет 1+1?")
+    assert "2" in data["reply"] and data.get("provider") == "calc"
+
+
+def test_brain_learns_from_ai_and_answers_when_ai_is_down(client, alik):
+    router.providers = [FakeProvider("a", "Фотосинтез — это когда растения превращают свет в энергию.")]
+    assert "Фотосинтез" in _say(client, alik, "Что такое фотосинтез?")["reply"]
+    router.providers = [QuotaProvider()]
+    data = _say(client, alik, "Объясни что такое фотосинтез")
+    assert data.get("provider") == "brain" and "растения" in data["reply"]
+
+
+def test_unknown_question_with_exhausted_key_is_honest(client, alik):
+    router.providers = [QuotaProvider()]
+    data = _say(client, alik, "Почему вода мокрая и текучая?")
+    assert data["error"] == "ai_unavailable" and "лимит" in data["reply"]
+
+
+def test_personal_questions_are_not_stored_in_shared_brain(client, alik):
+    router.providers = [FakeProvider("a", "Тебя зовут Алик.")]
+    _say(client, alik, "Как меня зовут?")
+    with SessionLocal() as s:
+        assert Mind(s).recall("Как меня зовут?", 0.5) is None
+
+
+def test_voice_conversations_stay_out_of_chat_history(client, alik):
+    router.providers = [FakeProvider("a", "Секретный голосовой ответ")]
+    _say(client, alik, "Расскажи голосом про гору Эверест", "/api/voice", source="voice")
+    texts = [m["text"] for m in client.get("/api/history", headers=H(alik)).json()]
+    assert "Секретный голосовой ответ" not in texts
+
+
+def test_self_learning_runs_until_key_limit_then_brain_answers():
+    class Teacher(AIProvider):
+        name, tasks, calls = "teacher", ("conversation",), 0
+
+        async def complete(self, messages):
+            self.calls += 1
+            if self.calls > 2:
+                raise ProviderError("teacher: HTTP 429", 429)
+            return '[{"q":"Что такое атом?","a":"Атом — мельчайшая частица вещества."}]'
+
+    async def go():
+        learner = SelfLearner()
+        assert learner.start(AIRouter([Teacher()]), SessionLocal, max_items=50, delay=0)
+        await learner.task
+        return learner.status()
+
+    st = asyncio.run(go())
+    assert st["reason"] == "limit" and st["learned"] >= 1 and st["active"] is False
+    with SessionLocal() as s:
+        hit = Mind(s).recall("что такое атом")
+        assert hit and "частица" in hit[0]
+
+
+def test_learn_commands_and_status(client, alik):
+    router.providers = []
+    assert "не настроен" in _say(client, alik, "Обучай самого себя")["reply"]
+    st = client.get("/api/learn/status", headers=H(alik)).json()
+    assert st["active"] is False and "brain" in st
+
+
+def test_brain_export_import_roundtrip(client, alik):
+    data = client.get("/api/brain/export", headers=H(alik)).json()
+    assert data["version"] == 1 and isinstance(data["items"], list)
+    r = client.post("/api/brain/import", json={"items": [{"q": "Столица Франции", "a": "Париж"}]}, headers=H(alik)).json()
+    assert r["added"] == 1
+    assert client.post("/api/brain/import", json={"items": [{"q": "Столица Франции", "a": "Париж"}]}, headers=H(alik)).json()["added"] == 0
+
+
+def test_voice_settings_validated_and_tts_without_key(client, alik):
+    assert client.put("/api/settings", json={"voice_name": "nova"}, headers=H(alik)).json()["voice_name"] == "nova"
+    assert client.put("/api/settings", json={"voice_name": "hacker"}, headers=H(alik)).status_code == 422
+    router.providers = []
+    assert client.post("/api/tts", json={"text": "привет"}, headers=H(alik)).status_code == 503
+
+
+def test_new_device_permissions_exist(client, alik):
+    actions = {p["action"] for p in client.get("/api/permissions", headers=H(alik)).json()}
+    assert {"location", "clipboard", "device.info", "share", "camera", "microphone"} <= actions

@@ -107,6 +107,7 @@ class Conversation(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     role: Mapped[str] = mapped_column(String(10))  # USER / WOODY
     text: Mapped[str] = mapped_column(Text)
+    source: Mapped[str | None] = mapped_column(String(10), nullable=True)  # text / voice (голосовые не показываются в чате)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -130,3 +131,18 @@ class TransferToken(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime)  # naive UTC
     used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     redeemed_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+# ---------------------------------------------------------------- мозг Woody
+class LearnedAnswer(Base):
+    """Собственный «мозг» Woody: вопрос → ответ, выученный у AI-инструмента. Общий, без личных данных."""
+
+    __tablename__ = "learned_answers"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    question: Mapped[str] = mapped_column(Text)
+    norm: Mapped[str] = mapped_column(Text, index=True)  # нормализованные токены вопроса
+    answer: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(10), default="AI")  # AI | SELF (самообучение) | USER
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    last_used: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

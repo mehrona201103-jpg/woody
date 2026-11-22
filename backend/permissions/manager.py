@@ -28,6 +28,10 @@ ACTIONS: dict[str, str] = {
     "files.delete": "Удалять файлы",
     "background": "Работать в фоне",
     "notifications": "Показывать уведомления",
+    "location": "Узнавать геолокацию",
+    "clipboard": "Работать с буфером обмена",
+    "device.info": "Читать состояние устройства (батарея, сеть)",
+    "share": "Отправлять приглашения другим устройствам",
 }
 DANGEROUS_ACTIONS = {"files.delete"}
 

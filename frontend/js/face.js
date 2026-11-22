@@ -7,7 +7,8 @@ const Face = (() => {
   const eyeL = $("eye-l"), eyeR = $("eye-r"), mouthEl = $("mouth");
   const browL = $("brow-l"), browR = $("brow-r");
   const lidL = eyeL.querySelector(".lid"), lidR = eyeR.querySelector(".lid");
-  const pupilL = eyeL.querySelector(".pupil"), pupilR = eyeR.querySelector(".pupil");
+  const pupilL = eyeL.querySelector(".pupil-g"), pupilR = eyeR.querySelector(".pupil-g");
+  const svg = $("face");
 
   // lidIn/lidOut — насколько прикрыто веко у внутреннего/внешнего угла глаза (0..1)
   // smile: -1 грусть … 1 улыбка; open: 0..1 раскрытие рта; width: ширина рта; brow: [высота, наклон]
@@ -22,6 +23,7 @@ const Face = (() => {
     angry:     { lidIn: .38, lidOut: .00, scale: 1.00, smile: -.40, open: 0,   width: 48, browY: 4,   browTilt: -14, look: null },
     surprised: { lidIn: .00, lidOut: .00, scale: 1.18, smile: 0,    open: .85, width: 26, browY: -14, browTilt: 0,   look: null },
     confused:  { lidIn: .06, lidOut: .10, scale: 1.00, smile: -.10, open: 0,   width: 44, browY: -6,  browTilt: 10,  look: [10, -4] },
+    learning:  { lidIn: 1.00, lidOut: 1.00, scale: 1.00, smile: .35,  open: 0,   width: 42, browY: -6,  browTilt: -3,  look: [0, 0] },
     sleepy:    { lidIn: .60, lidOut: .60, scale: 1.00, smile: .00,  open: 0,   width: 40, browY: 4,   browTilt: 0,   look: [0, 6] },
   };
   const KEYS = ["lidIn", "lidOut", "scale", "smile", "open", "width", "browY", "browTilt"];
@@ -31,9 +33,12 @@ const Face = (() => {
   let emotion = "neutral", activity = "idle", energy = 60;
   let blink = 0, blinkPhase = 0, talking = false, talkLevel = 0, talkTarget = 0, pulseUntil = 0, mouthOverride = null;
   let lastT = performance.now();
+  let gaze = null, pupilScale = 1, flashUntil = 0, flashEmotion = null;
 
   function target() {
     // activity имеет приоритет над эмоцией, но речь сохраняет улыбку/грусть эмоции
+    if (activity === "learning") return { ...T.learning, name: "learning" };
+    if (flashEmotion && performance.now() < flashUntil && activity === "idle") return { ...T[flashEmotion], name: flashEmotion };
     if (activity === "listening") return { ...T.listening, name: "listening" };
     if (activity === "thinking") return { ...T.thinking, name: "thinking" };
     const t = { ...(T[emotion] || T.neutral), name: emotion };
@@ -72,10 +77,14 @@ const Face = (() => {
       if (blinkPhase <= 0) { blink = 0; scheduleBlink(); }
     }
 
-    // взгляд
-    const lk = tg.look;
+    // взгляд: приоритет — то, на что смотрит камера (рука/движение), затем состояние, затем блуждание
+    const gazeOn = gaze && now < gaze.until && activity !== "learning";
+    const lk = gazeOn ? [gaze.x * 15, gaze.y * 10] : tg.look;
     if (lk) { look.tx = lk[0]; look.ty = lk[1]; }
-    look.x += (look.tx - look.x) * k; look.y += (look.ty - look.y) * k;
+    const lookK = gazeOn ? Math.min(1, k * 2.2) : k; // быстрее следит за движением, как живой
+    look.x += (look.tx - look.x) * lookK; look.y += (look.ty - look.y) * lookK;
+    const wantPupil = tg.name === "surprised" || tg.name === "listening" || gazeOn ? 1.18 : tg.name === "angry" ? .88 : 1;
+    pupilScale += (wantPupil - pupilScale) * k;
 
     // рот при речи: огибающая по времени + всплески на границах слов
     let mouth = { ...cur };
@@ -95,11 +104,12 @@ const Face = (() => {
 
     for (const [g, side] of [[eyeL, -1], [eyeR, 1]]) {
       const x = side < 0 ? 120 : 280;
-      g.setAttribute("transform", `translate(${x} 110) scale(${cur.scale})`);
+      const breathe = 1 + Math.sin(now / 1900) * 0.012; // лёгкое «дыхание»
+      g.setAttribute("transform", `translate(${x} ${110 + Math.sin(now / 1900) * 1.2}) scale(${cur.scale * breathe})`);
     }
     lidL.setAttribute("d", lidPath(cur.lidIn, cur.lidOut, blink, -1));
     lidR.setAttribute("d", lidPath(cur.lidIn, cur.lidOut, blink, 1));
-    const px = `translate(${look.x} ${look.y})`;
+    const px = `translate(${look.x} ${look.y}) scale(${pupilScale})`;
     pupilL.setAttribute("transform", px); pupilR.setAttribute("transform", px);
 
     const by = cur.browY, tl = cur.browTilt;
@@ -110,12 +120,22 @@ const Face = (() => {
 
   function scheduleBlink() { setTimeout(() => { blinkPhase = 140; }, 2200 + Math.random() * 3800); }
   function wander() {
-    if (!target().look) { look.tx = (Math.random() - .5) * 16; look.ty = (Math.random() - .5) * 9; }
-    setTimeout(wander, 1400 + Math.random() * 2400);
+    const gazeOn = gaze && performance.now() < gaze.until;
+    if (!target().look && !gazeOn) { look.tx = (Math.random() - .5) * 18; look.ty = (Math.random() - .5) * 10; }
+    if (Math.random() < .18) blinkPhase = blinkPhase > 0 ? blinkPhase : 140;  // иногда двойное моргание
+    setTimeout(wander, 700 + Math.random() * 2000);
   }
+  /** Смотреть в точку: x,y в диапазоне -1..1 (x>0 — вправо на экране). Через ttl мс взгляд возвращается к обычному. */
+  function lookAt(x, y, ttl = 1500) { gaze = { x: Math.max(-1, Math.min(1, x)), y: Math.max(-1, Math.min(1, y)), until: performance.now() + ttl }; }
+  /** Короткая реакция (удивление при резком движении), не перебивает речь и мысли. */
+  function flash(name, ms = 700) { if (T[name]) { flashEmotion = name; flashUntil = performance.now() + ms; } }
+  function setLearning(on) { svg.classList.toggle("learning", !!on); activity = on ? "learning" : "idle"; if (on) stopTalking(); }
 
   function setEmotion(e) { emotion = T[e] ? e : "neutral"; }
-  function setActivity(a) { activity = a || "idle"; if (activity !== "speaking") stopTalking(); }
+  function setActivity(a) {
+    if (activity === "learning" && a !== "learning") return; // пока Woody учится, глаза закрыты (выход — setLearning(false))
+    activity = a || "idle"; if (activity !== "speaking") stopTalking();
+  }
   /** Принимает {emotion, activity, energy} от сервера. */
   function applyState(s) {
     if (!s) return;
@@ -123,13 +143,13 @@ const Face = (() => {
     if (typeof s.energy === "number") energy = s.energy;
     if (s.activity) { setActivity(s.activity); if (s.activity === "speaking" && !talking) { /* рот двигает TTS */ } }
   }
-  function startTalking() { talking = true; activity = "speaking"; }
+  function startTalking() { if (activity === "learning") return; talking = true; activity = "speaking"; }
   function stopTalking() { talking = false; if (activity === "speaking") activity = "idle"; }
   function wordBoundary() { pulseUntil = performance.now() + 120; }
   /** Для будущего lip-sync по реальной громкости: 0..1 или null. */
   function setMouthLevel(v) { mouthOverride = v; }
 
   scheduleBlink(); setTimeout(wander, 1500); requestAnimationFrame(frame);
-  return { applyState, setEmotion, setActivity, startTalking, stopTalking, wordBoundary, setMouthLevel, states: Object.keys(T),
+  return { applyState, setEmotion, setActivity, lookAt, flash, setLearning, startTalking, stopTalking, wordBoundary, setMouthLevel, states: Object.keys(T),
            get emotion() { return emotion; }, get activity() { return activity; }, get talking() { return talking; } };
 })();

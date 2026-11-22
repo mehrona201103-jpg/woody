@@ -72,12 +72,63 @@ def resolve_public_base_url() -> str:
     return os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
 
 
+def provider_config_problems() -> list[str]:
+    """Подсказки по неполной настройке AI-провайдеров (без значений ключей)."""
+    problems: list[str] = []
+    for i in range(1, 6):
+        prefix = f"AI_PROVIDER_{i}_"
+        present = {k for k in ("API_KEY", "BASE_URL", "MODEL") if os.getenv(prefix + k, "").strip()}
+        if present and len(present) < 3:
+            missing = ", ".join(prefix + k for k in ("API_KEY", "BASE_URL", "MODEL") if k not in present)
+            problems.append(f"Провайдер {i} настроен не полностью, не хватает: {missing}")
+    wrong = [k for k in os.environ if k.startswith("AI_PROVIDER_") and not k[len("AI_PROVIDER_"):][:1].isdigit()]
+    if wrong:
+        problems.append("Переменные названы неверно (нужен номер, например AI_PROVIDER_1_API_KEY): " + ", ".join(sorted(wrong)))
+    return problems
+
+
+def _volume_dir() -> Path | None:
+    """Постоянный диск (Volume/Disk), если он подключён: Railway, Render, /data."""
+    for raw in (os.getenv("RAILWAY_VOLUME_MOUNT_PATH", ""), "/data", "/var/data"):
+        if not raw:
+            continue
+        path = Path(raw)
+        try:
+            if path.is_dir() and os.access(path, os.W_OK):
+                return path
+        except OSError:
+            continue
+    return None
+
+
+def resolve_database_url() -> str:
+    """DATABASE_URL (Postgres) — самый надёжный способ: база живёт отдельно от сервера и не стирается."""
+    url = os.getenv("DATABASE_URL", "").strip()
+    if url.startswith("postgres://"):
+        url = "postgresql+psycopg://" + url[len("postgres://"):]
+    elif url.startswith("postgresql://"):
+        url = "postgresql+psycopg://" + url[len("postgresql://"):]
+    return url
+
+
 class Settings:
     def __init__(self) -> None:
         self.app_env: str = os.getenv("APP_ENV", "development")
         self.log_level: str = os.getenv("LOG_LEVEL", "INFO").upper()
-        self.db_path: Path = Path(os.getenv("WOODY_DB_PATH", str(BASE_DIR / "data" / "woody.db")))
-        self.shared_dir: Path = Path(os.getenv("WOODY_SHARED_DIR", str(BASE_DIR / "data" / "shared")))
+        volume = _volume_dir()
+        default_db = (volume / "woody.db") if volume else (BASE_DIR / "data" / "woody.db")
+        default_shared = (volume / "shared") if volume else (BASE_DIR / "data" / "shared")
+        self.database_url: str = resolve_database_url()
+        self.db_path: Path = Path(os.getenv("WOODY_DB_PATH", str(default_db)))
+        self.shared_dir: Path = Path(os.getenv("WOODY_SHARED_DIR", str(default_shared)))
+        # Данные переживают перезапуск, если это внешняя БД либо файл вне папки приложения (на Volume).
+        local_default = (BASE_DIR / "data").resolve()
+        self.persistent: bool = bool(self.database_url) or local_default not in self.db_path.resolve().parents
+        # Озвучка «как у человека» через OpenAI-совместимый /audio/speech (по умолчанию тот же ключ, что у AI_PROVIDER_1).
+        self.tts_model: str = os.getenv("TTS_MODEL", "gpt-4o-mini-tts").strip()
+        self.tts_base_url: str = os.getenv("TTS_BASE_URL", "").strip().rstrip("/")
+        self.tts_api_key: str = os.getenv("TTS_API_KEY", "").strip()
+        self.self_learn_max: int = int(os.getenv("SELF_LEARN_MAX", "400"))
         # Если задан — все /api/* (кроме /api/health) требуют Authorization: Bearer <token>.
         self.access_token: str = os.getenv("WOODY_ACCESS_TOKEN", "").strip()
         self.public_base_url: str = resolve_public_base_url()

@@ -32,3 +32,22 @@ def test_frontend_calls_existing_endpoints():
     for path in used:
         base = "/api" + path.rstrip("/")
         assert any(r == base or r.startswith(base + "/") or base.startswith(r.split("{")[0].rstrip("/")) for r in routes), base
+
+
+def test_every_element_id_used_in_js_exists_in_html():
+    html = (FRONT / "index.html").read_text(encoding="utf-8")
+    ids = set(re.findall(r'id="([^"]+)"', html))
+    for js in (FRONT / "js").glob("*.js"):
+        for used in re.findall(r'(?:getElementById|\$)\(\s*"([a-z0-9\-]+)"\s*\)', js.read_text(encoding="utf-8")):
+            assert used in ids, f"{js.name}: нет элемента #{used}"
+
+
+def test_intro_form_does_not_overlap_the_face():
+    css = (FRONT / "css" / "style.css").read_text(encoding="utf-8")
+    block = re.search(r"\.intro\s*\{([^}]*)\}", css).group(1)
+    assert "absolute" not in block  # поле имени — обычный блок под лицом, а не поверх рта
+
+
+def test_learning_effect_and_airdrop_markup_present():
+    html = (FRONT / "index.html").read_text(encoding="utf-8")
+    assert 'id="learn-fx"' in html and 'id="airdrop"' in html and 'id="ad-send"' in html

@@ -74,8 +74,21 @@ const Api = (() => {
     } finally { clearTimeout(timer); }
   }
 
+  /** POST, ответ — бинарный (например аудио от /tts). Бросает ApiError при ошибке. */
+  async function blob(path, body, signal) {
+    const headers = { "Content-Type": "application/json" };
+    const token = store.get(TOKEN_KEY), session = store.get(SESSION_KEY);
+    if (token) headers.Authorization = "Bearer " + token;
+    if (session) headers["X-Woody-Session"] = session;
+    let res;
+    try { res = await fetch(BASE + "/api" + path, { method: "POST", headers, body: JSON.stringify(body), signal }); }
+    catch (e) { if (e.name === "AbortError") throw e; throw new ApiError(0, "network", String(e.message || e), "Нет связи с Woody."); }
+    if (!res.ok) throw new ApiError(res.status, "error", res.statusText, "Сервер не смог ответить.");
+    return res.blob();
+  }
+
   return {
-    request, health, ApiError,
+    request, blob, health, ApiError,
     setSession: (s) => store.set(SESSION_KEY, s),
     clearSession: () => store.del(SESSION_KEY),
     hasSession: () => !!store.get(SESSION_KEY),

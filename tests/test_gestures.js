@@ -1,6 +1,6 @@
 // Запуск: node tests/test_gestures.js
 const assert = require("assert");
-const { classify, TransferDetector } = require("../frontend/js/gestures.js");
+const { classify, TransferDetector, InviteDetector, WaveDetector } = require("../frontend/js/gestures.js");
 
 // Синтетическая рука, направленная вверх: запястье внизу (y=0.9). y растёт вниз.
 function hand({ index = true, middle = true, ring = true, pinky = true, thumb = "out" } = {}) {
@@ -63,5 +63,32 @@ const seq = [...frames("OPEN_PALM", 0, 500), ...frames("FIST", 560, 1500), ...fr
 assert.strictEqual(run(seq, det).length, 1, "в период cooldown второе срабатывание запрещено");
 const later = [...frames("OPEN_PALM", 4200, 4800), ...frames("FIST", 4860, 5700)];
 assert.strictEqual(run(later, det).length, 1, "после cooldown жест снова работает");
+
+
+// --- 👆 указательный вверх
+assert.strictEqual(classify(hand({ middle: false, ring: false, pinky: false, thumb: "tucked" })), "POINT_UP");
+
+// --- приглашение: 👍/👆 удерживается; мелькнувший кадр не срабатывает; повтор — только после паузы
+{
+  const inv = new InviteDetector();
+  const fire = (seq) => { const out = []; for (const [g, t] of seq) if (inv.update(g, t)) out.push(t); return out; };
+  assert.deepStrictEqual(fire(frames("THUMBS_UP", 0, 200)), []);               // слишком коротко
+  assert.strictEqual(fire(frames("POINT_UP", 1000, 1900)).length, 1);          // держится → один раз
+  assert.deepStrictEqual(fire(frames("THUMBS_UP", 2000, 3000)), []);           // cooldown
+  assert.strictEqual(fire(frames("THUMBS_UP", 20000, 21000)).length, 1);       // после паузы снова можно
+  const noisy = new InviteDetector(); let n = 0;
+  for (let t = 0; t < 2000; t += 60) if (noisy.update(t % 240 === 0 ? "FIST" : "THUMBS_UP", t)) n++;
+  assert.strictEqual(n, 0);                                                    // дрожащий жест не считается
+}
+
+// --- махание: ладонь с колебаниями запястья
+{
+  const w = new WaveDetector(); let fired = 0;
+  for (let t = 0; t < 1400; t += 60) if (w.update("OPEN_PALM", 0.5 + 0.08 * Math.sin(t / 110), t)) fired++;
+  assert.strictEqual(fired, 1);
+  const still = new WaveDetector(); let f2 = 0;
+  for (let t = 0; t < 3000; t += 60) if (still.update("OPEN_PALM", 0.5, t)) f2++;
+  assert.strictEqual(f2, 0);                                                   // неподвижная ладонь — не махание
+}
 
 console.log("gestures: all tests passed");

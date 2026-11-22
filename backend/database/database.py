@@ -12,12 +12,14 @@ from backend.config import get_settings
 logger = logging.getLogger("woody.db")
 
 _settings = get_settings()
-_settings.db_path.parent.mkdir(parents=True, exist_ok=True)
-
-engine = create_engine(
-    f"sqlite:///{Path(_settings.db_path)}",
-    connect_args={"check_same_thread": False},
-)
+if _settings.database_url:
+    engine = create_engine(_settings.database_url, pool_pre_ping=True)
+else:
+    _settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(
+        f"sqlite:///{Path(_settings.db_path)}",
+        connect_args={"check_same_thread": False},
+    )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 # (таблица, колонка, DDL) — колонки, добавленные после v0.1
@@ -25,6 +27,7 @@ _ADDED_COLUMNS = [
     ("users", "session_hash", "VARCHAR(64)"),
     ("emotions", "user_id", "INTEGER"),
     ("knowledge", "user_id", "INTEGER"),
+    ("conversations", "source", "VARCHAR(10)"),
 ]
 
 
@@ -49,7 +52,7 @@ def init_db() -> None:
 
     _migrate()
     Base.metadata.create_all(engine)
-    logger.info("База данных готова: %s", _settings.db_path)
+    logger.info("База данных готова: %s (постоянная: %s)", "DATABASE_URL" if _settings.database_url else _settings.db_path, _settings.persistent)
 
 
 def get_db() -> Iterator[Session]:

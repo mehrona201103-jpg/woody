@@ -1,24 +1,30 @@
 from __future__ import annotations
 
 import hmac
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+import base64
+import httpx
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from backend.actions.device import capabilities
-from backend.config import BASE_DIR, get_settings, setup_logging
+from backend.config import BASE_DIR, get_settings, provider_config_problems, setup_logging
 from backend.core.ai_router import AIRouter
 from backend.core.brain import PENDING, Brain, load_emotion
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
+from backend.core.mind import Mind
+from backend.core.selflearn import LEARNER
 from backend.core.memory import MemoryService
+from backend.core.user_settings import CHOICES as SETTING_CHOICES
 from backend.core.user_settings import DEFAULTS as SETTING_DEFAULTS
 from backend.core.user_settings import UserSettings
 from backend.core.users import create_user, find_user_by_secret
@@ -41,14 +47,25 @@ async def lifespan(_: FastAPI):
     with SessionLocal() as session:
         LearningService(session).seed()
         IdentityService(session).ensure()
+        seeded = Mind(session).seed_from_file(Path(BASE_DIR) / "data" / "brain_seed.json")
+        if seeded:
+            logger.info("Мозг Woody восстановлен из data/brain_seed.json: %s записей", seeded)
+    if not settings.persistent:
+        logger.warning(
+            "База НЕ постоянная: при каждом деплое она сотрётся. Подключите Volume (/data) или задайте DATABASE_URL (Postgres) — см. README."
+        )
+    for problem in provider_config_problems():
+        logger.warning(problem)
     if not settings.providers:
         logger.warning("AI-провайдеры не настроены (AI_PROVIDER_1_*). Woody не сможет отвечать через AI.")
+    else:
+        logger.info("AI-провайдеры: %s", ", ".join(p["name"] for p in router.status()))
     if not settings.access_token and settings.app_env == "production":
         logger.warning("WOODY_ACCESS_TOKEN не задан: приложение открыто для всех, у кого есть URL!")
     yield
 
 
-app = FastAPI(title="Woody", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.3.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -108,6 +125,24 @@ class SettingsBody(BaseModel):
     hand_tracking_enabled: bool | None = None
     transfer_enabled: bool | None = None
     voice_replies: bool | None = None
+    always_on_camera: bool | None = None
+    learn_from_chats: bool | None = None
+    voice_engine: str | None = None
+    voice_name: str | None = None
+
+
+class TTSBody(BaseModel):
+    text: str = Field(min_length=1, max_length=700)
+    voice: str | None = None
+
+
+class SeeBody(BaseModel):
+    image: str = Field(min_length=100, max_length=1_500_000)  # data:image/jpeg;base64,...
+    question: str = Field(default="Что ты видишь? Опиши коротко.", max_length=300)
+
+
+class BrainImport(BaseModel):
+    items: list[dict] = Field(max_length=20000)
 
 
 class TokenBody(BaseModel):
@@ -165,19 +200,23 @@ def status(user: User | None = Depends(get_user_optional), db: Session = Depends
             "providers": router.status(),
             "background": capabilities()["background"],
             "memory_enabled": bool(payload.get("settings", {}).get("memory_enabled", True)),
+            "persistent": settings.persistent,
+            "brain": Mind(db).stats(),
+            "learning": LEARNER.status(),
+            "tts": bool(_tts_target()),
         }
     )
     return payload
 
 
 # ------------------------------------------------------------------ chat / voice
-async def _chat(body: ChatBody, user: User, db: Session) -> dict:
-    return await Brain(db, router).handle(user, body.text.strip())
+async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -> dict:
+    return await Brain(db, router).handle(user, body.text.strip(), source)
 
 
 @app.post("/api/chat")
 async def chat(body: ChatBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
-    return await _chat(body, user, db)
+    return await _chat(body, user, db, "text")
 
 
 @app.post("/api/voice")
@@ -185,12 +224,12 @@ async def voice(body: ChatBody, user: User = Depends(require_user), db: Session 
     """Текст, распознанный браузером (STT выполняется на устройстве). Дальше — тот же Woody Core."""
     if not UserSettings(db, user.id).get("microphone_enabled"):
         raise HTTPException(403, {"code": "mic_disabled", "message": "Микрофон отключён в настройках."})
-    return await _chat(body, user, db)
+    return await _chat(body, user, db, "voice")
 
 
 @app.get("/api/history")
 def history(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
-    return [{"role": r.role, "text": r.text} for r in MemoryService(db).recent_messages(user.id, 50)]
+    return [{"role": r.role, "text": r.text} for r in MemoryService(db).recent_messages(user.id, 50, include_voice=False)]
 
 
 # ------------------------------------------------------------------ permissions
@@ -268,7 +307,10 @@ def update_settings(body: SettingsBody, user: User = Depends(require_user), db: 
     for name in SETTING_DEFAULTS:
         value = getattr(body, name)
         if value is not None:
-            us.set(name, value)
+            try:
+                us.set(name, value)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
     return us.all()
 
 
@@ -280,6 +322,97 @@ def providers() -> dict:
 @app.get("/api/background")
 def background() -> dict:
     return capabilities()["background"]
+
+
+# ------------------------------------------------------------------ мозг / самообучение
+@app.get("/api/brain")
+def brain_stats(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    return {**Mind(db).stats(), "persistent": settings.persistent, "learning": LEARNER.status()}
+
+
+@app.get("/api/brain/export")
+def brain_export(user: User = Depends(require_user), db: Session = Depends(get_db)) -> Response:
+    """Резервная копия мозга (без личных данных). Положите её в data/brain_seed.json — мозг вернётся после любого деплоя."""
+    data = json.dumps(Mind(db).export(), ensure_ascii=False)
+    return Response(data, media_type="application/json", headers={"Content-Disposition": 'attachment; filename="brain_seed.json"'})
+
+
+@app.post("/api/brain/import")
+def brain_import(body: BrainImport, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    return {"added": Mind(db).import_items(body.items)}
+
+
+@app.get("/api/learn/status")
+def learn_status(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    return {**LEARNER.status(), "brain": Mind(db).stats()}
+
+
+@app.post("/api/learn/start")
+async def learn_start(user: User = Depends(require_user)) -> dict:
+    started = LEARNER.start(router, SessionLocal, settings.self_learn_max)
+    return {**LEARNER.status(), "started": started}
+
+
+@app.post("/api/learn/stop")
+def learn_stop(user: User = Depends(require_user)) -> dict:
+    LEARNER.stop()
+    return LEARNER.status()
+
+
+# ------------------------------------------------------------------ голос (человеческий) и зрение
+def _tts_target() -> tuple[str, str] | None:
+    base, key = settings.tts_base_url, settings.tts_api_key
+    if not (base and key) and router.providers:
+        first = router.providers[0]
+        cfg = getattr(first, "cfg", None)
+        if cfg is not None:
+            base, key = base or cfg.base_url, key or cfg.api_key
+    return (base, key) if base and key else None
+
+
+@app.post("/api/tts")
+async def tts(body: TTSBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> Response:
+    target = _tts_target()
+    if not target:
+        raise HTTPException(503, {"code": "tts_unavailable", "message": "Серверный голос не настроен."})
+    voice = body.voice or UserSettings(db, user.id).get("voice_name")
+    if voice not in SETTING_CHOICES["voice_name"]:
+        voice = "coral"
+    base, key = target
+    payload = {
+        "model": settings.tts_model, "voice": voice, "input": body.text, "response_format": "mp3",
+        "instructions": "Говори по-русски как обычный живой человек в разговоре: непринуждённо, тепло, с естественными паузами и интонацией, не как диктор.",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(f"{base}/audio/speech", headers={"Authorization": f"Bearer {key}"}, json=payload)
+            if resp.status_code in (400, 404, 422) and settings.tts_model != "tts-1":
+                payload.update(model="tts-1"); payload.pop("instructions", None)  # модель без instructions
+                resp = await client.post(f"{base}/audio/speech", headers={"Authorization": f"Bearer {key}"}, json=payload)
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        logger.warning("TTS недоступен: %s", type(exc).__name__)
+        raise HTTPException(503, {"code": "tts_unavailable", "message": "Серверный голос сейчас недоступен."}) from exc
+    return Response(resp.content, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/see")
+async def see(body: SeeBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    """Woody смотрит на кадр с камеры только по прямой просьбе пользователя; кадр нигде не сохраняется."""
+    if not body.image.startswith("data:image/"):
+        raise HTTPException(422, "Нужно изображение")
+    if not UserSettings(db, user.id).get("camera_enabled"):
+        raise HTTPException(403, {"code": "camera_disabled", "message": "Камера отключена в настройках."})
+    messages = [
+        {"role": "system", "content": "Ты — Woody. Опиши по-русски, что видишь на кадре, живо и коротко (1–2 предложения)."},
+        {"role": "user", "content": [{"type": "text", "text": body.question}, {"type": "image_url", "image_url": {"url": body.image}}]},
+    ]
+    try:
+        reply, _ = await router.complete(messages, task="vision")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Vision недоступен: %s", exc)
+        return {"reply": "Сейчас я не могу разглядеть кадр: модель с поддержкой изображений недоступна."}
+    return {"reply": reply}
 
 
 # ------------------------------------------------------------------ transfer
