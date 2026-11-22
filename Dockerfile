@@ -12,5 +12,5 @@ RUN pip install -r requirements.txt
 COPY . .
 RUN mkdir -p /app/data/shared
 
-# Railway задаёт PORT сам; локально по умолчанию 8000
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Порт берётся из PORT внутри backend/run.py (без подстановки в оболочке)
+CMD ["python", "-m", "backend.run"]
