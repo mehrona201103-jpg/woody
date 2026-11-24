@@ -34,18 +34,22 @@ class ProviderConfig:
 
 
 def load_providers() -> list[ProviderConfig]:
-    """AI_PROVIDER_1_* ... AI_PROVIDER_5_* (любой OpenAI-совместимый API)."""
+    """Все доступные ключи: AI_PROVIDER_1..5 + OPENROUTER_API_KEY. Используются по очереди при сбоях/лимитах."""
     providers: list[ProviderConfig] = []
-    for i in range(1, 6):
+    seen_keys: set[str] = set()
+    for i in range(1, 8):
         prefix = f"AI_PROVIDER_{i}_"
         api_key = os.getenv(prefix + "API_KEY", "").strip()
         base_url = os.getenv(prefix + "BASE_URL", "").strip()
         model = os.getenv(prefix + "MODEL", "").strip()
         if not (api_key and base_url and model):
             continue
+        if api_key in seen_keys:
+            continue
+        seen_keys.add(api_key)
         tasks = tuple(
             t.strip().lower()
-            for t in os.getenv(prefix + "TASKS", "conversation").split(",")
+            for t in os.getenv(prefix + "TASKS", "conversation,vision").split(",")
             if t.strip()
         )
         providers.append(
@@ -54,23 +58,43 @@ def load_providers() -> list[ProviderConfig]:
                 base_url=base_url.rstrip("/"),
                 api_key=api_key,
                 model=model,
-                tasks=tasks,
-                timeout=float(os.getenv(prefix + "TIMEOUT", "30")),
+                tasks=tasks or ("conversation",),
+                timeout=float(os.getenv(prefix + "TIMEOUT", "45")),
             )
         )
-    # Короткий путь для OpenRouter: достаточно OPENROUTER_API_KEY (и по желанию OPENROUTER_MODEL).
-    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if or_key and len(providers) < 5:
+    # OpenRouter: OPENROUTER_API_KEY (или OPENROUTER_KEY) — всегда добавляем, если есть и ещё не в списке
+    or_key = (os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENROUTER_KEY") or "").strip()
+    if or_key and or_key not in seen_keys:
+        seen_keys.add(or_key)
         providers.append(
             ProviderConfig(
                 name="openrouter",
-                base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip().rstrip("/"),
+                base_url=(os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").strip().rstrip("/"),
                 api_key=or_key,
-                model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip(),
-                tasks=tuple(t.strip().lower() for t in os.getenv("OPENROUTER_TASKS", "conversation,vision").split(",") if t.strip()),
-                timeout=float(os.getenv("OPENROUTER_TIMEOUT", "30")),
+                model=(os.getenv("OPENROUTER_MODEL") or "openai/gpt-4o-mini").strip(),
+                tasks=tuple(t.strip().lower() for t in (os.getenv("OPENROUTER_TASKS") or "conversation,vision").split(",") if t.strip()) or ("conversation", "vision"),
+                timeout=float(os.getenv("OPENROUTER_TIMEOUT") or "45"),
             )
         )
+    # Альтернативные имена ключей OpenAI / Groq / DeepSeek
+    for name, env_key, default_url, default_model in (
+        ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini"),
+        ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant"),
+        ("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com", "deepseek-chat"),
+    ):
+        k = os.getenv(env_key, "").strip()
+        if k and k not in seen_keys:
+            seen_keys.add(k)
+            providers.append(
+                ProviderConfig(
+                    name=name,
+                    base_url=default_url,
+                    api_key=k,
+                    model=os.getenv(f"{name.upper()}_MODEL", default_model).strip(),
+                    tasks=("conversation", "vision"),
+                    timeout=45.0,
+                )
+            )
     return providers
 
 

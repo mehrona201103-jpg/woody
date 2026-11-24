@@ -119,7 +119,7 @@
     <main id="group-view" class="mode">
       <header class="topbar">
         <button id="grp-back" class="icon-btn" aria-label="Назад"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg></button>
-        <div class="grp-title"><div id="grp-avatars" class="stack"></div><b id="grp-name"></b></div>
+        <div class="grp-title"><div id="grp-avatars" class="stack"></div><div class="grp-text"><b id="grp-name"></b><small id="grp-sub"></small></div></div>
         <button id="grp-add" class="icon-btn accent" aria-label="Добавить участника"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM19 8v6M22 11h-6"/></svg></button>
         <button id="grp-leave" class="icon-btn" aria-label="Выйти из группы"><svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>
       </header>
@@ -232,6 +232,16 @@
       <button id="ad-qr" class="btn3d hidden">Показать QR</button>
       <button id="ad-close" class="btn3d">Закрыть</button>
     </div>
+  </div>
+
+
+  <!-- мини-окно обновления при новой версии на сервере -->
+  <div id="update-banner" role="dialog" aria-live="polite">
+    <div>
+      <b>Вышла новая версия Woody</b>
+      <span>Нажми «Обновить», чтобы подтянуть свежие фичи</span>
+    </div>
+    <button type="button" id="update-btn">Обновить</button>
   </div>
 
   <script src="/js/avatars.js"></script>

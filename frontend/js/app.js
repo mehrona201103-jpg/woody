@@ -354,5 +354,33 @@
   setInterval(() => { if (!document.hidden && $("app").classList.contains("active") && !Learn.active) Learn.resume(); }, 15000);
 
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
+
+  // --- проверка новой версии после деплоя ---
+  const LOCAL_VER = "0.6.0";
+  async function checkUpdate() {
+    try {
+      const r = await fetch("/api/version", { cache: "no-store" });
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data && data.version && data.version !== LOCAL_VER) {
+        const el = $("update-banner");
+        if (!el) return;
+        el.classList.add("show");
+        $("update-btn").onclick = () => {
+          // сброс SW-кэша + hard reload
+          if (navigator.serviceWorker) {
+            navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister()));
+          }
+          if (window.caches) {
+            caches.keys().then((ks) => ks.forEach((k) => caches.delete(k)));
+          }
+          location.reload(true);
+        };
+      }
+    } catch (_) {}
+  }
+  setInterval(checkUpdate, 60000);
+  setTimeout(checkUpdate, 8000);
+
   boot();
 })();

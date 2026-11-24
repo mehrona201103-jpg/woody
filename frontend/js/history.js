@@ -77,10 +77,14 @@ const Groups = (() => {
 
   function renderHeader(info) {
     members = {}; for (const u of info.members) members[u.id] = u;
+    const count = 1 + (info.members ? info.members.length : 0);
     $("grp-name").textContent = info.name;
+    const sub = document.getElementById("grp-sub");
+    if (sub) sub.textContent = count + " участник" + (count === 1 ? "" : count < 5 ? "а" : "ов");
     const faces = ['<span class="st">' + Avatars.woody() + "</span>", ...info.members.slice(0, 4).map((u) => '<span class="st">' + Avatars.user(u.name, u.picture) + "</span>")];
     $("grp-avatars").innerHTML = faces.join("");
-    $("grp-members").innerHTML = '<span class="chip">' + Avatars.woody() + "Woody</span>" + info.members.map((u) => '<span class="chip">' + Avatars.user(u.name, u.picture) + Avatars.esc(u.name) + (u.id === me ? " (ты)" : "") + "</span>").join("");
+    $("grp-members").innerHTML = '<span class="chip">' + Avatars.woody() + "<b>Woody</b> <small>· бот</small></span>" +
+      info.members.map((u) => '<span class="chip">' + Avatars.user(u.name, u.picture) + "<b>" + Avatars.esc(u.name) + "</b>" + (u.id === me ? " <small>· ты</small>" : "") + "</span>").join("");
   }
 
   async function open(id) {
