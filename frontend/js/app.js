@@ -339,6 +339,102 @@
       for (const p of status.providers) body.append(h("div", { className: "row" }, h("span", { textContent: p.name }), h("small", { textContent: p.tasks.join(", ") })));
       body.append(note("Ключи хранятся только на сервере и никогда не попадают в браузер."));
 
+      body.append(section("Woody Pro"));
+      const proOn = localStorage.getItem("woody_pro") === "1";
+      const proBox = h("div", { className: "pro-card" });
+      proBox.append(h("b", { textContent: proOn ? "Pro активен 🔥" : "Зачем платить за Pro" }));
+      proBox.append(h("p", { className: "note", textContent: proOn
+        ? "Все Pro-режимы открыты на этом устройстве."
+        : "Free — обычный чат. Pro — это уже другой уровень: модели, память, агент и приватность." }));
+
+      const tiers = [
+        { t: "🧠 Второй мозг", d: "Память на годы: проекты, люди, дедлайны. Woody сам связывает факты между чатами и напоминает, когда это важно." },
+        { t: "🤖 Агент-режим", d: "Даёшь цель («подготовь к экзамену», «разбери переписку», «собери план на неделю») — Woody сам дробит на шаги и ведёт до результата." },
+        { t: "🎙 Живой голос + тон", d: "Серверный голос с эмоциями, не браузерный робот. Можно выбрать характер голоса под настроение." },
+        { t: "👁 Глубокое зрение", d: "Фото ДЗ, скрины ошибок, таблицы: не «описание картинки», а разбор с решением и объяснением." },
+        { t: "👻 Режим инкогнито", d: "Чат не пишется в историю и не попадает в обучение. Для личных и рабочих тем." },
+        { t: "👨‍👩‍👧 Семейный доступ", d: "До 5 мест: ты + семья. Общий Pro, у каждого свой профиль и память." },
+        { t: "⚡ Приоритет и сильные модели", d: "Очередь вперёд + доступ к более умным моделям, когда обычный лимит кончился." },
+        { t: "📚 Режимы под задачу", d: "Учёба, Код, Тексты, Переговоры, Мемы — стиль ответа и глубина меняются под режим, не надо каждый раз объяснять." },
+        { t: "🔔 Проактивный Woody", d: "Напоминания, чек-ины, «ты обещал доделать X» — когда открываешь приложение." },
+        { t: "📦 Сейф и экспорт", d: "Полный бэкап: чаты, память, мозг, настройки. Перенос на другой сервер/телефон одним файлом." },
+        { t: "🛠 Свой характер", d: "Задаёшь правила: «говори короче», «всегда на ты», «сначала план потом детали» — Woody держит стиль постоянно." },
+        { t: "🌐 API и автоматизации", d: "Ключ API для своих скриптов, ботов и интеграций (Telegram, Notion, календарь) — в следующем релизе." },
+      ];
+      for (const x of tiers) {
+        const row = h("div", { className: "pro-feat" });
+        row.append(h("b", { textContent: x.t }));
+        row.append(h("p", { className: "note", textContent: x.d }));
+        proBox.append(row);
+      }
+      body.append(proBox);
+
+      // Pro controls when on
+      if (proOn) {
+        body.append(section("Pro-режимы"));
+        const modes = [
+          ["default", "Обычный"],
+          ["study", "Учёба"],
+          ["code", "Код"],
+          ["write", "Тексты"],
+          ["deal", "Переговоры"],
+          ["agent", "Агент"],
+          ["ghost", "Инкогнито"],
+        ];
+        const cur = localStorage.getItem("woody_pro_mode") || "default";
+        const modeRow = h("div", { className: "pro-modes" });
+        for (const [id, label] of modes) {
+          const b = h("button", { type: "button", className: "btn3d mini" + (cur === id ? " primary" : ""), textContent: label });
+          b.onclick = () => {
+            localStorage.setItem("woody_pro_mode", id);
+            window.__woodyProMode = id;
+            Chat.add("woody", id === "ghost"
+              ? "Инкогнито: этот чат не сохраню в историю и не выучу из него."
+              : id === "agent"
+              ? "Агент-режим: кидай цель — разложу на шаги и доведу."
+              : `Режим «${label}» включил. Пиши как обычно.`);
+            renderSettings();
+          };
+          modeRow.append(b);
+        }
+        body.append(modeRow);
+        body.append(note("Режим действует на новые сообщения в чате."));
+
+        body.append(section("Свой характер (Pro)"));
+        const persona = h("textarea", {
+          className: "edit-ta",
+          rows: 3,
+          placeholder: "Например: говори коротко, на ты, без воды; если задача сложная — сначала план из 3 пунктов",
+          value: localStorage.getItem("woody_pro_persona") || ""
+        });
+        const saveP = h("button", { className: "btn3d wide", textContent: "Сохранить характер" });
+        saveP.onclick = () => {
+          localStorage.setItem("woody_pro_persona", persona.value.trim());
+          Chat.add("woody", "Ок, характер запомнил. Буду держать этот стиль.");
+        };
+        body.append(persona, saveP);
+      }
+
+      const proBtn = h("button", {
+        textContent: proOn ? "Pro включён ✓" : "Попробовать Pro (тест)",
+        className: "btn3d wide primary"
+      });
+      proBtn.onclick = () => {
+        if (proOn) return;
+        localStorage.setItem("woody_pro", "1");
+        localStorage.setItem("woody_pro_mode", "default");
+        window.__woodyProMode = "default";
+        Chat.add("woody", "Pro включил. Открой режимы в настройках: Учёба, Код, Агент, Инкогнито. Это уже не просто чат.");
+        renderSettings();
+      };
+      body.append(proBtn);
+      if (proOn) {
+        const off = h("button", { className: "btn3d wide", textContent: "Выключить Pro на устройстве" });
+        off.onclick = () => { localStorage.removeItem("woody_pro"); localStorage.removeItem("woody_pro_mode"); window.__woodyProMode = "default"; renderSettings(); };
+        body.append(off);
+      }
+      body.append(note("Оплата (карта / Stars) — отдельным релизом. Сейчас Pro-тест открывает режимы и характер на устройстве."));
+
       body.append(section("Приватность"));
       body.append(statusRow("Камера", HandTracker.active));
       body.append(statusRow("Микрофон", Voice.active && !micMuted));
@@ -356,7 +452,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.1";
+  const LOCAL_VER = "0.6.3";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });

@@ -82,7 +82,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.1", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.3", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -127,6 +127,8 @@ class ChatBody(BaseModel):
     source: str = "text"
     chat_id: int | None = None
     image: str | None = Field(default=None, max_length=1_800_000)  # data:image/jpeg;base64,… — фото или снимок камеры
+    pro_mode: str | None = Field(default=None, max_length=32)  # study|code|write|deal|agent|ghost|default
+    pro_persona: str | None = Field(default=None, max_length=500)  # пользовательский характер (Pro)
 
 
 class TruncateBody(BaseModel):
@@ -277,11 +279,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.1", "build": "2026-11-24b"}
+    return {"status": "ok", "service": "woody", "version": "0.6.3", "build": "2026-11-24d"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.1", "build": "2026-11-24b"}
+    return {"version": "0.6.3", "build": "2026-11-24d"}
 
 
 def _user_payload(db: Session, user: User | None) -> dict:
@@ -384,7 +386,7 @@ async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -
         result = await _see(body, user, db, chat)
     else:
         brain = Brain(db, router)
-        result = await brain.handle(user, body.text.strip(), source, chat.id)
+        result = await brain.handle(user, body.text.strip(), source, chat.id, pro_mode=body.pro_mode, pro_persona=body.pro_persona)
         result["chat_id"] = chat.id
         result["ids"] = dict(brain.memory.last_ids)
     chat.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)

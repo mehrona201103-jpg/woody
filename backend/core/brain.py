@@ -80,6 +80,36 @@ def save_emotion(session: Session, user_id: int, state: EmotionState) -> None:
     session.commit()
 
 
+
+PRO_MODE_HINTS = {
+    "study": (
+        "Режим УЧЁБА (Pro): объясняй понятно, по шагам, с примерами. "
+        "Если задача — дай решение и коротко почему так. Можно чуть длиннее обычного."
+    ),
+    "code": (
+        "Режим КОД (Pro): пиши полный рабочий код в блоках ```язык, с комментариями. "
+        "Сначала кратко идея, потом код, потом как запустить. Без воды."
+    ),
+    "write": (
+        "Режим ТЕКСТЫ (Pro): помогай писать посты, письма, сочинения. "
+        "Давай 1–2 сильных варианта, правь стиль под аудиторию."
+    ),
+    "deal": (
+        "Режим ПЕРЕГОВОРЫ (Pro): помогай формулировать жёстко, но уважительно. "
+        "Дай скрипт реплик и запасные ходы."
+    ),
+    "agent": (
+        "Режим АГЕНТ (Pro): пользователь дал цель. Разбей на конкретные шаги (1. 2. 3.), "
+        "сделай первый шаг в ответе сам (текст/план/черновик), спроси что нужно дальше. "
+        "Не рассипайся — веди к результату."
+    ),
+    "ghost": (
+        "Режим ИНКОГНИТО (Pro): отвечай как обычно, но не ссылайся на старую личную память "
+        "и не предлагай «запомнить» это. Тема чувствительная."
+    ),
+}
+
+
 class Brain:
     def __init__(self, session: Session, router: AIRouter) -> None:
         self.session = session
@@ -102,7 +132,7 @@ class Brain:
             **extra,
         }
 
-    async def handle(self, user: User, text: str, source: str = "text", chat_id: int | None = None) -> dict[str, Any]:
+    async def handle(self, user: User, text: str, source: str = "text", chat_id: int | None = None, pro_mode: str | None = None, pro_persona: str | None = None) -> dict[str, Any]:
         self.memory.chat_id = chat_id
         self.permissions = PermissionManager(self.session, user.id)
         emotion = load_emotion(self.session, user.id)
@@ -146,7 +176,8 @@ class Brain:
 
         for event in detect_events(text):
             emotion.apply(event)
-        self.memory.learn_from_text(user.id, text)
+        if (pro_mode or "") != "ghost":
+            self.memory.learn_from_text(user.id, text)
 
         # --- сначала собственный мозг: если вопрос почти точно знаком — отвечаем сами и экономим лимит ключа
         known = mind.recall(text, 0.9)
@@ -157,10 +188,15 @@ class Brain:
         system = build_system_prompt(
             user.name,
             emotion,
-            self.memory.context_lines(user.id),
+            self.memory.context_lines(user.id) if (pro_mode or "") != "ghost" else [],
             self.learning.context_lines(user.id),
             persona=self.identity.personality(),
         )
+        mode = (pro_mode or "").strip().lower()
+        if mode in PRO_MODE_HINTS:
+            system += "\n\n" + PRO_MODE_HINTS[mode]
+        if pro_persona and pro_persona.strip():
+            system += "\n\nДоп. правила стиля от пользователя (Pro, соблюдай постоянно): " + pro_persona.strip()[:500]
         if source != "voice":
             system += ("\n\nЕсли просят код — пиши полностью рабочий, проверенный и без ошибок код, обязательно в блоке ```язык … ```, "
                        "с короткими комментариями и краткой подсказкой, как запустить. Ответы оформляй аккуратно: абзацы, списки, **жирный** для главного.")
@@ -194,7 +230,7 @@ class Brain:
             return self._result(msg, emotion, face="confused", error="ai_unavailable")
 
         reply, tone = split_tone(reply)
-        if cacheable(text, reply) and UserSettings(self.session, user.id).get("learn_from_chats"):
+        if (pro_mode or "") != "ghost" and cacheable(text, reply) and UserSettings(self.session, user.id).get("learn_from_chats"):
             mind.remember(text, reply, "AI")  # Woody запоминает то, чего не знал
         emotion.decay(0.05)
         save_emotion(self.session, user.id, emotion)

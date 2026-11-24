@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="28" fill="#0b1220"/>
+  <g id="face">
+    <path d="M28 42 Q48 28 58 42" fill="none" stroke="#5ee7ff" stroke-width="6" stroke-linecap="round"/>
+    <path d="M70 42 Q80 28 100 42" fill="none" stroke="#5ee7ff" stroke-width="6" stroke-linecap="round"/>
+    <ellipse cx="43" cy="64" rx="14" ry="16" fill="#fff"/>
+    <ellipse cx="85" cy="64" rx="14" ry="16" fill="#fff"/>
+    <circle id="pL" cx="46" cy="66" r="7" fill="#0a1a2e">
+      <animate attributeName="cx" values="46;42;50;46" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    <circle id="pR" cx="82" cy="66" r="7" fill="#0a1a2e">
+      <animate attributeName="cx" values="82;78;86;82" dur="3s" repeatCount="indefinite"/>
+    </circle>
+    <circle cx="48" cy="63" r="2.2" fill="#fff"/>
+    <circle cx="84" cy="63" r="2.2" fill="#fff"/>
+    <path d="M48 92 Q64 108 80 92" fill="none" stroke="#5ee7ff" stroke-width="6" stroke-linecap="round">
+      <animate attributeName="d" values="M48 92 Q64 108 80 92;M48 94 Q64 100 80 94;M48 92 Q64 108 80 92" dur="2.5s" repeatCount="indefinite"/>
+    </path>
+  </g>
+</svg>

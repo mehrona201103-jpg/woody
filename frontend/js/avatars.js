@@ -1,18 +1,26 @@
-/* Логотипы: Woody — живое лицо (глазки, брови, рот) как на оригинале, у людей — фото или буква. */
+/* Woody: только глаза + брови + рот, БЕЗ круга и без «головы». Как на главном экране. */
 const Avatars = (() => {
   const esc = (s) => String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const COLORS = ["#8b5cf6", "#f472b6", "#34d399", "#fbbf24", "#fb7185", "#60a5fa", "#f97316", "#2dd4bf"];
 
-  /** Оригинальное лицо Woody: только контур + глаза + брови + рот (без залитой головы). */
+  /** Лицо без головы: только брови, глаза, рот (оригинал). */
   let gid = 0;
   function woody(cls = "") {
-    const g = "wg" + (gid++);
-    return `<svg class="wface ${cls}" viewBox="0 0 100 100" aria-label="Woody">
-      <path class="woutline" d="M18 42 C18 18 42 12 50 12 C58 12 82 18 82 42 C82 58 72 72 50 78 C28 72 18 58 18 42 Z" fill="none" stroke="#f5e61a" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
-      <path class="wbrow bl" d="M28 34 Q38 28 46 34" /><path class="wbrow br" d="M54 34 Q62 28 72 34" />
-      <g class="weye el"><ellipse cx="36" cy="48" rx="9" ry="10.5" fill="#fff" stroke="none"/><circle class="wp" cx="37.5" cy="49" r="4.2" fill="#06102e" stroke="none"/><circle cx="39" cy="46.8" r="1.4" fill="#fff" stroke="none"/></g>
-      <g class="weye er"><ellipse cx="64" cy="48" rx="9" ry="10.5" fill="#fff" stroke="none"/><circle class="wp" cx="62.5" cy="49" r="4.2" fill="#06102e" stroke="none"/><circle cx="64" cy="46.8" r="1.4" fill="#fff" stroke="none"/></g>
-      <path class="wmouth" d="M40 68 Q50 76 60 68" />
+    gid++;
+    return `<svg class="wface ${cls}" viewBox="0 0 100 80" aria-label="Woody">
+      <path class="wbrow bl" d="M18 18 Q32 8 44 18" />
+      <path class="wbrow br" d="M56 18 Q68 8 82 18" />
+      <g class="weye el">
+        <ellipse cx="31" cy="38" rx="12" ry="14" fill="#fff" stroke="none"/>
+        <circle class="wp" cx="33" cy="40" r="5.5" fill="#0a1a2e" stroke="none"/>
+        <circle cx="35.5" cy="37" r="1.8" fill="#fff" stroke="none"/>
+      </g>
+      <g class="weye er">
+        <ellipse cx="69" cy="38" rx="12" ry="14" fill="#fff" stroke="none"/>
+        <circle class="wp" cx="67" cy="40" r="5.5" fill="#0a1a2e" stroke="none"/>
+        <circle cx="69.5" cy="37" r="1.8" fill="#fff" stroke="none"/>
+      </g>
+      <path class="wmouth" d="M38 62 Q50 74 62 62" />
     </svg>`;
   }
 
@@ -28,10 +36,10 @@ const Avatars = (() => {
   return { woody, user, fill, esc };
 })();
 
-/* Заставка: только при первом входе в приложение (не при каждом возврате). */
+/* Заставка один раз за сессию — только лицо, без круга. */
 const Splash = (() => {
   const el = document.getElementById("boot");
-  const TOTAL = 2200;
+  const TOTAL = 2000;
   let started = performance.now(), timer = 0;
   const KEY = "woody_splash_done";
   const already = sessionStorage.getItem(KEY) === "1";
@@ -49,10 +57,7 @@ const Splash = (() => {
     return new Promise((res) => setTimeout(() => { el.classList.add("off"); el.classList.remove("play"); sessionStorage.setItem(KEY, "1"); res(); }, wait));
   }
 
-  if (already) {
-    el.classList.add("off");
-  } else {
-    el.classList.add("play");
-  }
+  if (already) el.classList.add("off");
+  else el.classList.add("play");
   return { play, finish, skipped: already };
 })();

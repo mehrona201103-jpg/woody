@@ -175,7 +175,7 @@ input,textarea,select{font:inherit;color:var(--text)}
 @keyframes pop{from{opacity:0;transform:translateY(10px) scale(.98)}}
 .msg.user{justify-content:flex-end}
 .msg.user .bub{background:var(--panel);border-radius:22px 22px 6px 22px;padding:10px 16px;max-width:82%;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere}
-.msg.woody .mini-av{width:28px;height:28px;border-radius:50%;flex:none;margin-top:2px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;color:#03233a;background:transparent}
+.msg.woody .mini-av{width:34px;height:28px;border-radius:0;flex:none;margin-top:2px;display:flex;align-items:center;justify-content:center;background:transparent;overflow:visible}
 .msg.woody .bub{line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-width:calc(100% - 38px);padding-top:3px}
 .msg.error .bub{color:#ff9b9b}
 .bub img{display:block;max-width:100%;border-radius:14px;margin-bottom:8px}
@@ -267,11 +267,10 @@ input,textarea,select{font:inherit;color:var(--text)}
 
 
 /* ================= v0.5 ================= */
-/* --- лицо Woody: жёлтый контур + глазки, брови, рот (как оригинал) --- */
+/* --- лицо Woody: ТОЛЬКО глаза/брови/рот, без головы --- */
 .wface{width:100%;height:100%;display:block;overflow:visible}
-.wface .woutline{fill:none;stroke:#f5e61a;stroke-width:5.5;stroke-linecap:round;stroke-linejoin:round;filter:drop-shadow(0 0 6px rgba(245,230,26,.45))}
-.wface .wbrow{fill:none;stroke:#5ee7ff;stroke-width:3.2;stroke-linecap:round}
-.wface .wmouth{fill:none;stroke:#5ee7ff;stroke-width:3.4;stroke-linecap:round}
+.wface .wbrow{fill:none;stroke:#5ee7ff;stroke-width:3.6;stroke-linecap:round}
+.wface .wmouth{fill:none;stroke:#5ee7ff;stroke-width:3.8;stroke-linecap:round}
 .wface .weye{transform-box:fill-box;transform-origin:center;animation:wblink 4.6s infinite}
 .wface .weye.er{animation-delay:.07s}
 .wface .wp{animation:wlook 7s ease-in-out infinite}
@@ -285,7 +284,7 @@ input,textarea,select{font:inherit;color:var(--text)}
 .ad-me,.ad-bubble{background:none!important;box-shadow:0 0 0 3px rgba(61,224,255,.25)}
 
 /* --- заставка: Woody появляется, подмигивает и уходит --- */
-.boot .boot-woody{width:132px;height:132px;opacity:0;transform:scale(.3) translateY(30px);filter:drop-shadow(0 10px 28px rgba(245,230,26,.4))}
+.boot .boot-woody{width:148px;height:120px;opacity:0;transform:scale(.3) translateY(30px);filter:drop-shadow(0 8px 20px rgba(94,231,255,.35))}
 .boot.play .boot-woody{animation:bootin 2.4s both}
 .boot.play .wface .weye{animation:none}
 .boot.play .wface .weye.er{animation:bwink 2.4s both}
@@ -401,3 +400,12 @@ input,textarea,select{font:inherit;color:var(--text)}
 .grp-text{display:flex;flex-direction:column;min-width:0;align-items:center}
 .grp-text b{font-size:16px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:42vw}
 .grp-text small{font-size:11px;color:#8a8a8a;margin-top:1px}
+
+/* --- Woody Pro --- */
+.pro-card{background:linear-gradient(160deg,rgba(61,224,255,.08),rgba(139,92,246,.1));border:1px solid rgba(61,224,255,.25);border-radius:18px;padding:14px 14px 8px;margin:8px 0 12px}
+.pro-card>b{display:block;font-size:16px;margin-bottom:6px}
+.pro-feat{padding:10px 0;border-top:1px solid rgba(255,255,255,.06)}
+.pro-feat b{display:block;font-size:14px;margin-bottom:4px}
+.pro-feat .note{margin:0}
+.pro-modes{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px}
+.pro-modes .btn3d.mini.primary{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#04122e;border:0}

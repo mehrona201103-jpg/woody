@@ -124,7 +124,14 @@ const Chat = (() => {
         Face.setActivity("idle");
         if (voice) { setStatus("Говорю…"); await Voice.speak(local.reply, { tone: "calm" }); }
       } else {
-        const data = await Api.request(voice ? "/voice" : "/chat", { method: "POST", body: JSON.stringify({ text, source, chat_id: chatId, image }), signal: controller.signal });
+        const proOn = localStorage.getItem("woody_pro") === "1";
+        const payload = { text, source, chat_id: chatId, image };
+        if (proOn) {
+          payload.pro_mode = localStorage.getItem("woody_pro_mode") || "default";
+          const persona = localStorage.getItem("woody_pro_persona") || "";
+          if (persona) payload.pro_persona = persona;
+        }
+        const data = await Api.request(voice ? "/voice" : "/chat", { method: "POST", body: JSON.stringify(payload), signal: controller.signal });
         if (dots) dots.remove();
         const newChat = !chatId && data.chat_id;
         if (data.chat_id) chatId = data.chat_id;
