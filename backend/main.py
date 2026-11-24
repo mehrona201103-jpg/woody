@@ -23,7 +23,7 @@ from backend.config import BASE_DIR, get_settings, provider_config_problems, set
 from backend.core.ai_router import AIRouter
 from backend.core.brain import PENDING, Brain, load_emotion, split_tone
 from backend.core.billing import PLANS, FREE_LIMIT, can_request, bump_usage, create_payment, effective_plan, remaining_requests
-from backend.core.admin_notify import notify_payment, decide_payment
+from backend.core.admin_notify import notify_payment, decide_payment, handle_update, setup_webhook, bot_token
 from backend.database.models import PaymentRequest
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
@@ -82,17 +82,26 @@ async def lifespan(_: FastAPI):
         logger.info("AI-провайдеры: %s", ", ".join(p["name"] for p in router.status()))
     if not settings.access_token and settings.app_env == "production":
         logger.warning("WOODY_ACCESS_TOKEN не задан: приложение открыто для всех, у кого есть URL!")
+    # Telegram admin bot: ставим webhook автоматически
+    base = settings.public_base_url or ""
+    if bot_token() and base:
+        asyncio.create_task(setup_webhook(base))
+        logger.info("Telegram webhook → %s/api/admin/telegram", base.rstrip("/"))
+    elif bot_token():
+        logger.warning("Есть TELEGRAM_ADMIN_BOT_TOKEN, но нет PUBLIC_BASE_URL — бот не получит /start. Задай PUBLIC_BASE_URL=https://woodyai.up.railway.app")
+    else:
+        logger.warning("TELEGRAM_ADMIN_BOT_TOKEN не задан — админ-бот выключен")
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.5", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.6", lifespan=lifespan)
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
     path = request.url.path
     # Публичны: health, страницы и проверка/погашение transfer-токена (их защищает сам одноразовый токен).
-    public = (path in ("/api/health", "/api/version", "/api/admin/telegram") or path in ("/api/transfer/check", "/api/transfer/redeem")
+    public = (path in ("/api/health", "/api/version", "/api/admin/telegram", "/api/admin/bot-status", "/api/admin/setup-webhook") or path in ("/api/transfer/check", "/api/transfer/redeem")
               or path.startswith("/api/auth/") or path == "/api/tts/greeting")
     if settings.access_token and path.startswith("/api/") and not public:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -288,11 +297,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.5", "build": "2026-11-24f"}
+    return {"status": "ok", "service": "woody", "version": "0.6.6", "build": "2026-11-24g"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.5", "build": "2026-11-24f"}
+    return {"version": "0.6.6", "build": "2026-11-24g"}
 
 
 # ------------------------------------------------------------------ тарифы / оплата
@@ -323,8 +332,11 @@ async def api_payment(body: PaymentBody, user: User = Depends(require_user), db:
     if not body.receipt or not body.receipt.startswith("data:image"):
         raise HTTPException(422, {"code": "need_receipt", "message": "Нужен скриншот чека (фото)."})
     req = create_payment(db, user, plan, body.period, body.receipt)
-    await notify_payment(db, req, user)
-    return {"id": req.id, "status": req.status, "message": "Заявка отправлена. Админ проверит чек и активирует тариф."}
+    sent = await notify_payment(db, req, user)
+    msg = "Заявка отправлена. Админ проверит чек и активирует тариф."
+    if not sent:
+        msg = "Заявка сохранена, но Telegram-бот не настроен или не ответил. Проверь TELEGRAM_ADMIN_BOT_TOKEN и TELEGRAM_ADMIN_CHAT_ID."
+    return {"id": req.id, "status": req.status, "notified": sent, "message": msg}
 
 
 @app.get("/api/usage")
@@ -338,57 +350,57 @@ def api_usage(user: User = Depends(require_user), db: Session = Depends(get_db))
     }
 
 
+
+@app.get("/api/admin/bot-status")
+async def admin_bot_status() -> dict:
+    """Проверка токена бота и webhook (без секретов)."""
+    import os
+    import httpx
+    token = bot_token()
+    if not token:
+        return {"ok": False, "error": "no_token", "hint": "Задай TELEGRAM_ADMIN_BOT_TOKEN"}
+    base = settings.public_base_url or ""
+    async with httpx.AsyncClient(timeout=20) as client:
+        me = (await client.get(f"https://api.telegram.org/bot{token}/getMe")).json()
+        wh = (await client.get(f"https://api.telegram.org/bot{token}/getWebhookInfo")).json()
+    return {
+        "ok": True,
+        "bot": (me.get("result") or {}).get("username"),
+        "webhook": (wh.get("result") or {}).get("url"),
+        "pending_updates": (wh.get("result") or {}).get("pending_update_count"),
+        "last_error": (wh.get("result") or {}).get("last_error_message"),
+        "public_base_url": base,
+        "admin_chat_set": bool(os.getenv("TELEGRAM_ADMIN_CHAT_ID")),
+        "expected_webhook": (base.rstrip("/") + "/api/admin/telegram") if base else None,
+    }
+
+
+@app.post("/api/admin/setup-webhook")
+async def admin_setup_webhook() -> dict:
+    base = settings.public_base_url or ""
+    if not base:
+        raise HTTPException(400, {"message": "Нужен PUBLIC_BASE_URL"})
+    await setup_webhook(base)
+    return await admin_bot_status()
+
+
 @app.post("/api/admin/telegram")
 async def admin_telegram_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
-    """Webhook Telegram: /approve_ID и /reject_ID от админа."""
+    """Webhook Telegram-бота (админ)."""
     import os
     secret = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
     if secret and request.headers.get("x-telegram-bot-api-secret-token") != secret:
         raise HTTPException(403, {"detail": "forbidden"})
-    data = await request.json()
-    msg = (data.get("message") or {})
-    text = (msg.get("text") or "").strip()
-    chat_id = str((msg.get("chat") or {}).get("id") or "")
-    admin_chat = (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
-    if admin_chat and chat_id != admin_chat:
+    try:
+        data = await request.json()
+    except Exception:
         return {"ok": True}
-    if text.startswith("/approve_"):
-        try:
-            rid = int(text.split("_", 1)[1].split()[0])
-        except ValueError:
-            return {"ok": True}
-        result = decide_payment(db, rid, True)
-        return {"ok": True, "result": result}
-    if text.startswith("/reject_"):
-        try:
-            rid = int(text.split("_", 1)[1].split()[0])
-        except ValueError:
-            return {"ok": True}
-        result = decide_payment(db, rid, False)
-        return {"ok": True, "result": result}
-    if text.startswith("/stats"):
-        from sqlalchemy import func, select
-        users_n = db.scalar(select(func.count()).select_from(User)) or 0
-        pending = db.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.status == "pending")) or 0
-        pro_n = db.scalar(select(func.count()).select_from(User).where(User.plan.in_(["pro", "ultra"]))) or 0
-        # ответ админу
-        token = (os.getenv("TELEGRAM_ADMIN_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-        if token and chat_id:
-            import httpx
-            txt = f"📊 Woody stats\nUsers: {users_n}\nPaid plans: {pro_n}\nPending payments: {pending}\nProviders: {len(router.status())}"
-            async with httpx.AsyncClient(timeout=20) as client:
-                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": txt})
-        return {"ok": True}
-    if text.startswith("/users"):
-        rows = db.scalars(select(User).order_by(User.id.desc()).limit(30)).all()
-        lines = [f"{u.id}. {u.name} | {u.plan or 'free'} | req={u.request_count or 0}" for u in rows]
-        token = (os.getenv("TELEGRAM_ADMIN_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
-        if token and chat_id:
-            import httpx
-            async with httpx.AsyncClient(timeout=20) as client:
-                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "Users:\n" + "\n".join(lines) or "—"})
-        return {"ok": True}
+    try:
+        await handle_update(db, data, providers_count=len(router.status()))
+    except Exception as exc:
+        logger.exception("admin telegram: %s", exc)
     return {"ok": True}
+
 
 
 

@@ -462,7 +462,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.5";
+  const LOCAL_VER = "0.6.6";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });
