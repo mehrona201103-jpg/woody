@@ -85,7 +85,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.4", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.5", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -288,11 +288,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.4", "build": "2026-11-24e"}
+    return {"status": "ok", "service": "woody", "version": "0.6.5", "build": "2026-11-24f"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.4", "build": "2026-11-24e"}
+    return {"version": "0.6.5", "build": "2026-11-24f"}
 
 
 # ------------------------------------------------------------------ тарифы / оплата

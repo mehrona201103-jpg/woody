@@ -1,0 +1,45 @@
+# Render Blueprint для Woody. Dashboard → New → Blueprint → выберите репозиторий.
+services:
+  - type: web
+    name: woody
+    runtime: python
+    plan: free            # free: БД SQLite стирается при каждом деплое/перезапуске. Для постоянной памяти см. блок disk ниже.
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # --- Постоянная память (нужен платный план, например starter): ---
+    # 1) замените plan: free на plan: starter
+    # 2) раскомментируйте disk и WOODY_DB_PATH/WOODY_SHARED_DIR ниже
+    # disk:
+    #   name: woody-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: APP_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: INFO
+      # - key: WOODY_DB_PATH
+      #   value: /var/data/woody.db
+      # - key: WOODY_SHARED_DIR
+      #   value: /var/data/shared
+      # Чтобы база не стиралась — вставьте строку подключения Postgres (Neon/Supabase):
+      - key: DATABASE_URL
+        sync: false
+      - key: WOODY_ACCESS_TOKEN      # пароль доступа: сгенерирует Render
+        generateValue: true
+      # Секреты — вводятся в Dashboard вручную (sync: false), в репозиторий не попадают:
+      - key: AI_PROVIDER_1_NAME
+        value: main
+      - key: AI_PROVIDER_1_BASE_URL
+        sync: false
+      - key: AI_PROVIDER_1_API_KEY
+        sync: false
+      - key: AI_PROVIDER_1_MODEL
+        sync: false
+      - key: AI_PROVIDER_1_TASKS
+        value: conversation
