@@ -82,14 +82,14 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.0", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.1", lifespan=lifespan)
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
     path = request.url.path
     # Публичны: health, страницы и проверка/погашение transfer-токена (их защищает сам одноразовый токен).
-    public = (path == "/api/health" or path in ("/api/transfer/check", "/api/transfer/redeem")
+    public = (path in ("/api/health", "/api/version") or path in ("/api/transfer/check", "/api/transfer/redeem")
               or path.startswith("/api/auth/") or path == "/api/tts/greeting")
     if settings.access_token and path.startswith("/api/") and not public:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -277,11 +277,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.0", "build": "2026-11-24"}
+    return {"status": "ok", "service": "woody", "version": "0.6.1", "build": "2026-11-24b"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.0", "build": "2026-11-24"}
+    return {"version": "0.6.1", "build": "2026-11-24b"}
 
 
 def _user_payload(db: Session, user: User | None) -> dict:

@@ -356,25 +356,28 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.0";
+  const LOCAL_VER = "0.6.1";
   async function checkUpdate() {
     try {
-      const r = await fetch("/api/version", { cache: "no-store" });
+      const r = await fetch("/api/health", { cache: "no-store" });
       if (!r.ok) return;
       const data = await r.json();
       if (data && data.version && data.version !== LOCAL_VER) {
         const el = $("update-banner");
         if (!el) return;
         el.classList.add("show");
-        $("update-btn").onclick = () => {
-          // сброс SW-кэша + hard reload
-          if (navigator.serviceWorker) {
-            navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister()));
-          }
-          if (window.caches) {
-            caches.keys().then((ks) => ks.forEach((k) => caches.delete(k)));
-          }
-          location.reload(true);
+        $("update-btn").onclick = async () => {
+          try {
+            if (navigator.serviceWorker) {
+              const regs = await navigator.serviceWorker.getRegistrations();
+              await Promise.all(regs.map((r) => r.unregister()));
+            }
+            if (window.caches) {
+              const ks = await caches.keys();
+              await Promise.all(ks.map((k) => caches.delete(k)));
+            }
+          } catch (_) {}
+          location.href = location.origin + "/?nocache=" + Date.now();
         };
       }
     } catch (_) {}
