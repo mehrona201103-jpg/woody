@@ -249,201 +249,211 @@
   }
   const statusRow = (label, on) => h("div", { className: "row" }, h("span", {}, h("span", { className: "dot" + (on ? " on" : "") }), label), h("span", { textContent: on ? "ВКЛ" : "ВЫКЛ" }));
 
+
   async function renderSettings() {
     body.innerHTML = "";
     try {
-      const [perms, status, mem] = await Promise.all([api("/permissions"), api("/status"), api("/memory")]);
+      const [perms, status, mem, usage] = await Promise.all([
+        api("/permissions"),
+        api("/status"),
+        api("/memory"),
+        api("/usage").catch(() => ({ plan: "free", used: 0, remaining: 200000 })),
+      ]);
       settings = { ...settings, ...status.settings };
+      const plan = usage.plan || "free";
 
+      // --- Аккаунт
       body.append(section("Аккаунт"));
       const nameIn = h("input", { type: "text", value: user.name, maxLength: 50 });
       nameIn.onchange = async () => {
         const v = nameIn.value.trim(); if (!v) { nameIn.value = user.name; return; }
         try { const r = await api("/user", { method: "PUT", body: JSON.stringify({ name: v }) }); user.name = r.name; $("side-name").textContent = r.name; $("empty-title").textContent = `Чем помочь, ${r.name}?`; } catch (_) { nameIn.value = user.name; }
       };
-      body.append(h("div", { className: "row" }, h("span", { textContent: "Как Woody тебя зовёт" }), nameIn));
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Имя" }), nameIn));
       if (user.email) body.append(h("div", { className: "row" }, h("span", { textContent: "Почта" }), h("small", { textContent: user.email })));
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Тариф" }), h("b", { textContent: plan.toUpperCase() })));
+      const left = usage.remaining == null ? "∞" : String(usage.remaining);
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Запросы" }), h("small", { textContent: `${usage.used || 0} / ${usage.limit == null ? "∞" : usage.limit} (осталось ${left})` })));
 
+      // --- Голос
       body.append(section("Голос"));
-      body.append(toggleRow("Отвечать голосом в голосовом режиме", "voice_replies", (on) => Voice.setVoiceReplies(on)));
+      body.append(toggleRow("Отвечать голосом", "voice_replies", (on) => Voice.setVoiceReplies(on)));
       const eng = h("input", { type: "checkbox", checked: settings.voice_engine !== "natural" });
       const vsel = h("select");
-      const vrow = h("div", { className: "row" }, h("span", { textContent: "Настоящий голос" }), vsel);
+      const vrow = h("div", { className: "row" }, h("span", { textContent: "Тембр" }), vsel);
       const syncVoiceRow = () => vrow.classList.toggle("hidden", eng.checked);
       eng.onchange = async () => {
-        try { await save({ voice_engine: eng.checked ? "browser" : "natural" }); Voice.configure(settings); syncVoiceRow(); Voice.unlock(); Voice.speak(eng.checked ? "Теперь я говорю голосом браузера." : "Теперь я говорю настоящим голосом.", { tone: "joy", force: true }); }
-        catch (e) { eng.checked = !eng.checked; Chat.add("woody", e.userMessage || "Не удалось сохранить настройку.", true); }
+        try { await save({ voice_engine: eng.checked ? "browser" : "natural" }); Voice.configure(settings); syncVoiceRow(); }
+        catch (e) { eng.checked = !eng.checked; }
       };
-      body.append(h("div", { className: "row" }, h("span", { textContent: "Голос браузера (временно)" }), h("label", { className: "sw" }, eng, h("i"))));
-      for (const [v, l] of [["coral", "Коралл (женский, тёплый)"], ["nova", "Нова (женский, живой)"], ["shimmer", "Шиммер (женский, мягкий)"], ["sage", "Сейдж (спокойный)"], ["alloy", "Эллой (нейтральный)"], ["ash", "Эш (мужской)"], ["echo", "Эхо (мужской)"], ["onyx", "Оникс (мужской, низкий)"]]) vsel.append(h("option", { value: v, textContent: l, selected: settings.voice_name === v }));
-      vsel.onchange = async () => { await save({ voice_name: vsel.value }); Voice.configure(settings); Voice.unlock(); Voice.speak("Привет! Вот так я теперь говорю.", { tone: "joy", force: true }); };
+      body.append(h("div", { className: "row" }, h("span", { textContent: "Голос браузера" }), h("label", { className: "sw" }, eng, h("i"))));
+      for (const [v, l] of [["coral", "Коралл"], ["nova", "Нова"], ["shimmer", "Шиммер"], ["sage", "Сейдж"], ["alloy", "Эллой"], ["ash", "Эш"], ["echo", "Эхо"], ["onyx", "Оникс"]])
+        vsel.append(h("option", { value: v, textContent: l, selected: settings.voice_name === v }));
+      vsel.onchange = async () => { await save({ voice_name: vsel.value }); Voice.configure(settings); };
       body.append(vrow); syncVoiceRow();
-      body.append(note("Включено — Woody говорит голосом твоего браузера, это бесплатно. Выключи, чтобы включить настоящий живой голос от провайдера (нужен платный ключ). В чате текст озвучивается только по кнопке 🔊 под ответом."));
 
-      body.append(section("Камера и микрофон"));
-      body.append(toggleRow("Камера разрешена", "camera_enabled", (on) => { if (!on) stopCamera(); }));
-      body.append(toggleRow("Микрофон разрешён", "microphone_enabled", (on) => { if (!on) Voice.stopConversation(); }));
-      body.append(toggleRow("Жесты рук", "hand_tracking_enabled", (on) => { if (!on) stopCamera(); }));
-      body.append(toggleRow("Передача Woody (QR)", "transfer_enabled"));
-      body.append(note("Камера и микрофон работают в голосовом режиме. Видео не покидает устройство: кадр уходит только когда ты просишь «посмотри, что видишь»."));
+      // --- Устройства
+      body.append(section("Устройства"));
+      body.append(toggleRow("Камера", "camera_enabled"));
+      body.append(toggleRow("Микрофон", "microphone_enabled"));
+      body.append(toggleRow("Жесты рук", "hand_tracking_enabled"));
+      body.append(statusRow("Камера сейчас", HandTracker.active));
+      body.append(statusRow("Микрофон сейчас", Voice.active && !micMuted));
 
-      body.append(section("Мозг Woody"));
-      const br = status.brain || { total: 0, from_ai: 0, self_taught: 0 };
-      body.append(note(`Выучено ответов: ${br.total} (из разговоров: ${br.from_ai}, самообучение: ${br.self_taught}). Когда лимит ключа закончится, я отвечаю из этого мозга.`));
-      body.append(toggleRow("Учиться на вопросах", "learn_from_chats"));
-      const lb = h("button", { textContent: Learn.active ? "■ Остановить обучение" : "🧠 Обучай самого себя", className: "btn3d wide" });
-      lb.onclick = async () => { if (Learn.active) await Learn.stop(); else { await api("/learn/start", { method: "POST" }); Learn.begin(); sheet.classList.remove("on"); } };
-      body.append(lb);
-      const ex = h("button", { textContent: "Сохранить мозг в файл", className: "btn3d wide" });
-      ex.onclick = async () => {
-        const data = await api("/brain/export");
-        const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: "application/json" }));
-        const a = h("a", { href: url, download: "brain_seed.json" }); document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-      };
-      const im = h("button", { textContent: "Загрузить мозг из файла", className: "btn3d wide" });
-      im.onclick = () => {
-        const inp = h("input", { type: "file", accept: "application/json" });
-        inp.onchange = async () => { try { const d = JSON.parse(await inp.files[0].text()); const r = await api("/brain/import", { method: "POST", body: JSON.stringify({ items: d.items || [] }) }); Chat.add("woody", `Добавил в мозг ${r.added} новых ответов.`); renderSettings(); } catch (_) { Chat.add("woody", "Не удалось прочитать файл мозга.", true); } };
-        inp.click();
-      };
-      body.append(ex, im);
-      const pn = note(status.persistent ? "База данных постоянная: память и аккаунты переживают перезапуск и деплой." : "⚠ База НЕ постоянная: при деплое аккаунты и память сотрутся. Подключи DATABASE_URL (Postgres) или Volume.");
-      if (!status.persistent) pn.classList.add("warn");
-      body.append(pn);
-
+      // --- Память и мозг
       body.append(section("Память"));
       body.append(toggleRow("Запоминать разговоры", "memory_enabled"));
-      if (!mem.length) body.append(note("Память пуста."));
-      for (const m of mem) {
-        const del = h("button", { textContent: "Удалить", className: "btn3d" });
-        del.onclick = async () => { await api(`/memory/${m.id}`, { method: "DELETE" }); renderSettings(); };
-        body.append(h("div", { className: "row" }, h("span", {}, `${m.key}: ${m.value}`, h("small", { textContent: m.category })), del));
-      }
-      const clr = h("button", { textContent: "Очистить всю память и историю", className: "btn3d wide" });
+      body.append(toggleRow("Учиться на вопросах", "learn_from_chats"));
+      body.append(note(`Фактов в памяти: ${mem.length}`));
+      const clr = h("button", { textContent: "Очистить память и историю", className: "btn3d wide" });
       clr.onclick = async () => {
-        const ok = await Permissions.choose("Удалить всю твою память и историю разговоров?", [["Да, удалить всё", true, "danger"], ["Отмена", false]]);
+        const ok = await Permissions.choose("Удалить память и историю?", [["Да", true, "danger"], ["Отмена", false]]);
         if (ok) { await api("/memory", { method: "DELETE" }); Chat.newChat(); History.reset(); renderSettings(); }
       };
       body.append(clr);
 
+      // --- Разрешения (компактно)
       body.append(section("Разрешения"));
       for (const p of perms) {
         const sel = h("select");
-        for (const [v, l] of [["", "Спрашивать"], ["ALLOW_ALWAYS", "Разрешено"], ["DENY", "Запрещено"]]) sel.append(h("option", { value: v, textContent: l, selected: (p.decision || "") === v }));
+        for (const [v, l] of [["", "Спрашивать"], ["ALLOW_ALWAYS", "Да"], ["DENY", "Нет"]])
+          sel.append(h("option", { value: v, textContent: l, selected: (p.decision || "") === v }));
         sel.onchange = async () => { if (sel.value) await api("/permissions", { method: "POST", body: JSON.stringify({ action: p.action, decision: sel.value }) }); else await api(`/permissions/${p.action}`, { method: "DELETE" }); };
-        body.append(h("div", { className: "row" }, h("span", { textContent: p.label + (p.dangerous ? " ⚠" : "") }), sel));
+        body.append(h("div", { className: "row" }, h("span", { textContent: p.label }), sel));
       }
 
-      body.append(section("AI-провайдеры"));
-      if (!status.providers.length) body.append(note("Провайдеры не настроены. Добавь AI_PROVIDER_1_* или OPENROUTER_API_KEY в Variables."));
-      for (const p of status.providers) body.append(h("div", { className: "row" }, h("span", { textContent: p.name }), h("small", { textContent: p.tasks.join(", ") })));
-      body.append(note("Ключи хранятся только на сервере и никогда не попадают в браузер."));
-
-      body.append(section("Woody Pro"));
-      const proOn = localStorage.getItem("woody_pro") === "1";
-      const proBox = h("div", { className: "pro-card" });
-      proBox.append(h("b", { textContent: proOn ? "Pro активен 🔥" : "Зачем платить за Pro" }));
-      proBox.append(h("p", { className: "note", textContent: proOn
-        ? "Все Pro-режимы открыты на этом устройстве."
-        : "Free — обычный чат. Pro — это уже другой уровень: модели, память, агент и приватность." }));
-
-      const tiers = [
-        { t: "🧠 Второй мозг", d: "Память на годы: проекты, люди, дедлайны. Woody сам связывает факты между чатами и напоминает, когда это важно." },
-        { t: "🤖 Агент-режим", d: "Даёшь цель («подготовь к экзамену», «разбери переписку», «собери план на неделю») — Woody сам дробит на шаги и ведёт до результата." },
-        { t: "🎙 Живой голос + тон", d: "Серверный голос с эмоциями, не браузерный робот. Можно выбрать характер голоса под настроение." },
-        { t: "👁 Глубокое зрение", d: "Фото ДЗ, скрины ошибок, таблицы: не «описание картинки», а разбор с решением и объяснением." },
-        { t: "👻 Режим инкогнито", d: "Чат не пишется в историю и не попадает в обучение. Для личных и рабочих тем." },
-        { t: "👨‍👩‍👧 Семейный доступ", d: "До 5 мест: ты + семья. Общий Pro, у каждого свой профиль и память." },
-        { t: "⚡ Приоритет и сильные модели", d: "Очередь вперёд + доступ к более умным моделям, когда обычный лимит кончился." },
-        { t: "📚 Режимы под задачу", d: "Учёба, Код, Тексты, Переговоры, Мемы — стиль ответа и глубина меняются под режим, не надо каждый раз объяснять." },
-        { t: "🔔 Проактивный Woody", d: "Напоминания, чек-ины, «ты обещал доделать X» — когда открываешь приложение." },
-        { t: "📦 Сейф и экспорт", d: "Полный бэкап: чаты, память, мозг, настройки. Перенос на другой сервер/телефон одним файлом." },
-        { t: "🛠 Свой характер", d: "Задаёшь правила: «говори короче», «всегда на ты», «сначала план потом детали» — Woody держит стиль постоянно." },
-        { t: "🌐 API и автоматизации", d: "Ключ API для своих скриптов, ботов и интеграций (Telegram, Notion, календарь) — в следующем релизе." },
-      ];
-      for (const x of tiers) {
-        const row = h("div", { className: "pro-feat" });
-        row.append(h("b", { textContent: x.t }));
-        row.append(h("p", { className: "note", textContent: x.d }));
-        proBox.append(row);
+      // --- Низ: тарифы и pro-режимы
+      body.append(section("Подписка"));
+      const goPay = h("button", { className: "btn3d wide primary", textContent: "Перейти на платный тариф" });
+      goPay.onclick = () => openPlansModal();
+      body.append(goPay);
+      if (plan === "pro" || plan === "ultra") {
+        const modesBtn = h("button", { className: "btn3d wide", textContent: "Режимы Pro / Ultra" });
+        modesBtn.onclick = () => openProModesModal(plan);
+        body.append(modesBtn);
       }
-      body.append(proBox);
-
-      // Pro controls when on
-      if (proOn) {
-        body.append(section("Pro-режимы"));
-        const modes = [
-          ["default", "Обычный"],
-          ["study", "Учёба"],
-          ["code", "Код"],
-          ["write", "Тексты"],
-          ["deal", "Переговоры"],
-          ["agent", "Агент"],
-          ["ghost", "Инкогнито"],
-        ];
-        const cur = localStorage.getItem("woody_pro_mode") || "default";
-        const modeRow = h("div", { className: "pro-modes" });
-        for (const [id, label] of modes) {
-          const b = h("button", { type: "button", className: "btn3d mini" + (cur === id ? " primary" : ""), textContent: label });
-          b.onclick = () => {
-            localStorage.setItem("woody_pro_mode", id);
-            window.__woodyProMode = id;
-            Chat.add("woody", id === "ghost"
-              ? "Инкогнито: этот чат не сохраню в историю и не выучу из него."
-              : id === "agent"
-              ? "Агент-режим: кидай цель — разложу на шаги и доведу."
-              : `Режим «${label}» включил. Пиши как обычно.`);
-            renderSettings();
-          };
-          modeRow.append(b);
-        }
-        body.append(modeRow);
-        body.append(note("Режим действует на новые сообщения в чате."));
-
-        body.append(section("Свой характер (Pro)"));
-        const persona = h("textarea", {
-          className: "edit-ta",
-          rows: 3,
-          placeholder: "Например: говори коротко, на ты, без воды; если задача сложная — сначала план из 3 пунктов",
-          value: localStorage.getItem("woody_pro_persona") || ""
-        });
-        const saveP = h("button", { className: "btn3d wide", textContent: "Сохранить характер" });
-        saveP.onclick = () => {
-          localStorage.setItem("woody_pro_persona", persona.value.trim());
-          Chat.add("woody", "Ок, характер запомнил. Буду держать этот стиль.");
-        };
-        body.append(persona, saveP);
-      }
-
-      const proBtn = h("button", {
-        textContent: proOn ? "Pro включён ✓" : "Попробовать Pro (тест)",
-        className: "btn3d wide primary"
-      });
-      proBtn.onclick = () => {
-        if (proOn) return;
-        localStorage.setItem("woody_pro", "1");
-        localStorage.setItem("woody_pro_mode", "default");
-        window.__woodyProMode = "default";
-        Chat.add("woody", "Pro включил. Открой режимы в настройках: Учёба, Код, Агент, Инкогнито. Это уже не просто чат.");
-        renderSettings();
-      };
-      body.append(proBtn);
-      if (proOn) {
-        const off = h("button", { className: "btn3d wide", textContent: "Выключить Pro на устройстве" });
-        off.onclick = () => { localStorage.removeItem("woody_pro"); localStorage.removeItem("woody_pro_mode"); window.__woodyProMode = "default"; renderSettings(); };
-        body.append(off);
-      }
-      body.append(note("Оплата (карта / Stars) — отдельным релизом. Сейчас Pro-тест открывает режимы и характер на устройстве."));
-
-      body.append(section("Приватность"));
-      body.append(statusRow("Камера", HandTracker.active));
-      body.append(statusRow("Микрофон", Voice.active && !micMuted));
-      body.append(note("Память, разговоры и разрешения принадлежат только тебе."));
+      body.append(note("Оплата: перевод → скрин чека → проверка админом в Telegram."));
     } catch (e) {
       console.error("[Woody settings]", e);
       body.append(note("Не удалось загрузить настройки."));
     }
   }
+
+  // ---- тарифы / оплата UI
+  let payPlan = "pro", payReceipt = "";
+  async function openPlansModal() {
+    const modal = $("plans-modal");
+    try {
+      const data = await api("/plans");
+      const fill = (id, key) => {
+        const ul = $(id); ul.innerHTML = "";
+        (data.plans[key].features || []).slice(0, 5).forEach((f) => {
+          const li = document.createElement("li"); li.textContent = f; ul.append(li);
+        });
+      };
+      fill("plan-pro-feats", "pro");
+      fill("plan-ultra-feats", "ultra");
+      window.__payInfo = data.payment || {};
+    } catch (_) {
+      $("plan-pro-feats").innerHTML = "<li>Безлимит</li><li>Режимы</li><li>Приоритет</li><li>Характер</li><li>Зрение</li>";
+      $("plan-ultra-feats").innerHTML = "<li>Всё из Pro</li><li>Woody Code</li><li>ZIP-проекты</li><li>Python/JS/C++</li><li>Макс. память</li>";
+    }
+    modal.classList.remove("hidden");
+  }
+  $("plans-close").onclick = () => $("plans-modal").classList.add("hidden");
+  document.querySelectorAll(".plan-buy").forEach((btn) => {
+    btn.onclick = () => {
+      payPlan = btn.dataset.plan || "pro";
+      $("plans-modal").classList.add("hidden");
+      openPayModal(payPlan);
+    };
+  });
+
+  function openPayModal(plan) {
+    payPlan = plan;
+    payReceipt = "";
+    $("pay-title").textContent = plan === "ultra" ? "Оплата Ultra" : "Оплата Pro";
+    $("pay-amount").textContent = plan === "ultra" ? "19.99 сомони / год" : "9.99 сомони / месяц";
+    const info = window.__payInfo || {};
+    $("pay-req").textContent = [info.holder, info.requisites].filter(Boolean).join("\\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
+    $("pay-preview").classList.add("hidden");
+    $("pay-preview").innerHTML = "";
+    $("pay-err").textContent = "";
+    $("pay-send").disabled = true;
+    $("pay-modal").classList.remove("hidden");
+  }
+  $("pay-cancel").onclick = () => $("pay-modal").classList.add("hidden");
+  $("pay-pick").onclick = () => $("pay-file").click();
+  $("pay-file").onchange = () => {
+    const f = $("pay-file").files && $("pay-file").files[0];
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      payReceipt = r.result;
+      $("pay-preview").classList.remove("hidden");
+      $("pay-preview").innerHTML = "";
+      const img = document.createElement("img"); img.src = payReceipt; $("pay-preview").append(img);
+      $("pay-send").disabled = false;
+    };
+    r.readAsDataURL(f);
+  };
+  $("pay-send").onclick = async () => {
+    $("pay-err").textContent = "";
+    $("pay-send").disabled = true;
+    try {
+      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPlan === "ultra" ? "year" : "month", receipt: payReceipt }) });
+      $("pay-modal").classList.add("hidden");
+      Chat.add("woody", res.message || "Заявка отправлена. Жди одобрения админа.");
+    } catch (e) {
+      $("pay-err").textContent = e.userMessage || e.message || "Не удалось отправить";
+      $("pay-send").disabled = false;
+    }
+  };
+
+  function openProModesModal(plan) {
+    const list = $("pro-modes-list");
+    list.innerHTML = "";
+    const modes = [
+      ["default", "Обычный"],
+      ["study", "Учёба"],
+      ["code", "Код"],
+      ["write", "Тексты"],
+      ["deal", "Переговоры"],
+      ["agent", "Агент"],
+      ["ghost", "Инкогнито"],
+    ];
+    if (plan === "ultra") modes.push(["woody_code", "Woody Code 🔥"]);
+    const cur = localStorage.getItem("woody_pro_mode") || "default";
+    modes.forEach(([id, label]) => {
+      const b = h("button", { type: "button", className: "btn3d mini" + (cur === id ? " primary" : ""), textContent: label });
+      b.onclick = () => {
+        localStorage.setItem("woody_pro_mode", id);
+        localStorage.setItem("woody_pro", "1");
+        document.body.classList.toggle("woody-code", id === "woody_code");
+        list.querySelectorAll("button").forEach((x) => x.classList.remove("primary"));
+        b.classList.add("primary");
+        Chat.add("woody", id === "woody_code" ? "Woody Code. Пиши задачу — соберу код жёстко и по делу." : `Режим: ${label}`);
+      };
+      list.append(b);
+    });
+    $("pro-persona-ta").value = localStorage.getItem("woody_pro_persona") || "";
+    $("pro-modes-modal").classList.remove("hidden");
+  }
+  $("pro-modes-close").onclick = () => $("pro-modes-modal").classList.add("hidden");
+  $("pro-persona-save").onclick = () => {
+    localStorage.setItem("woody_pro_persona", $("pro-persona-ta").value.trim());
+    Chat.add("woody", "Характер сохранил.");
+    $("pro-modes-modal").classList.add("hidden");
+  };
+
+  // лимит в чате
+  window.__woodyOnLimit = () => {
+    const row = document.createElement("div");
+    row.className = "msg woody limit-msg";
+    row.innerHTML = '<div class="bub"><b>Бесплатный лимит закончился</b><p class="note">200 000 запросов израсходованы. Подключи Pro или Ultra.</p><button type="button" class="btn3d primary" id="limit-buy">Купить тариф</button></div>';
+    const log = document.querySelector("#chat-log, .chat");
+    if (log) { log.append(row); row.querySelector("#limit-buy").onclick = () => openPlansModal(); }
+  };
 
   $("ad-me").innerHTML = Avatars.woody(); $("ad-bubble").innerHTML = Avatars.woody();
   // Woody один на всех: если на другом устройстве началось обучение, здесь он тоже закрывает глазки
@@ -452,7 +462,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.3";
+  const LOCAL_VER = "0.6.4";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });

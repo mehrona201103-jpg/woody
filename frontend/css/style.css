@@ -409,3 +409,23 @@ input,textarea,select{font:inherit;color:var(--text)}
 .pro-feat .note{margin:0}
 .pro-modes{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px}
 .pro-modes .btn3d.mini.primary{background:linear-gradient(135deg,var(--cyan),var(--blue));color:#04122e;border:0}
+
+/* тарифы */
+.plans-box{max-width:min(96vw,520px)}
+.plan-cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:12px 0}
+@media(max-width:520px){.plan-cards{grid-template-columns:1fr}}
+.plan-card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.plan-card.ultra{border-color:rgba(239,68,68,.45);background:linear-gradient(160deg,rgba(239,68,68,.12),rgba(0,0,0,.2))}
+.plan-card .price{font-size:22px;font-weight:700}
+.plan-card ul{margin:0;padding-left:18px;font-size:13px;color:#bdbdbd;flex:1}
+.plan-card li{margin:4px 0}
+.pay-req{background:#141414;border-radius:12px;padding:12px;white-space:pre-wrap;font-size:14px;margin:8px 0;border:1px solid var(--line)}
+.pay-preview img{max-width:100%;border-radius:12px;margin-top:8px}
+.limit-msg .bub{border:1px solid rgba(251,191,36,.4)}
+
+/* Woody Code — красный стиль */
+body.woody-code{--cyan:#ff5c5c;--blue:#b91c1c}
+body.woody-code .wface .wbrow,body.woody-code .wface .wmouth{stroke:#ff6b6b}
+body.woody-code .msg.woody .bub{border-left:3px solid #ef4444}
+body.woody-code #top-status,body.woody-code .topbar b{color:#ff8a8a}
+body.woody-code .btn3d.primary{background:linear-gradient(135deg,#ef4444,#991b1b);color:#fff}

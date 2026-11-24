@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Woody">
-  <link rel="manifest" href="/manifest.webmanifest?v=063">
+  <link rel="manifest" href="/manifest.webmanifest?v=064">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/assets/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
   <title>Woody</title>
-  <link rel="stylesheet" href="/css/style.css?v=063">
+  <link rel="stylesheet" href="/css/style.css?v=064">
 </head>
 <body>
   <div id="boot" class="boot"></div>
@@ -195,7 +195,60 @@
     <div id="settings-body" class="sheet-body"></div>
   </aside>
 
-  <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
+  
+  <div id="plans-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box plans-box">
+      <h2>Платные тарифы</h2>
+      <p class="note">Free: 200 000 запросов. Дальше — Pro или Ultra.</p>
+      <div class="plan-cards">
+        <div class="plan-card" data-plan="pro">
+          <b>Pro</b>
+          <div class="price">9.99 <small>сомони / мес</small></div>
+          <ul id="plan-pro-feats"></ul>
+          <button type="button" class="btn3d primary plan-buy" data-plan="pro">Купить Pro</button>
+        </div>
+        <div class="plan-card ultra" data-plan="ultra">
+          <b>Ultra</b>
+          <div class="price">19.99 <small>сомони / год</small></div>
+          <ul id="plan-ultra-feats"></ul>
+          <button type="button" class="btn3d primary plan-buy" data-plan="ultra">Купить Ultra</button>
+        </div>
+      </div>
+      <div class="modal-actions"><button type="button" class="btn3d" id="plans-close">Закрыть</button></div>
+    </div>
+  </div>
+
+  <div id="pay-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h2 id="pay-title">Оплата</h2>
+      <p id="pay-amount" class="note"></p>
+      <div id="pay-req" class="pay-req"></div>
+      <p class="note">1) Переведи сумму 2) Загрузи скрин чека 3) Отправь заявку — админ проверит</p>
+      <input type="file" id="pay-file" accept="image/*" class="hidden">
+      <button type="button" class="btn3d wide" id="pay-pick">Загрузить скрин чека</button>
+      <div id="pay-preview" class="pay-preview hidden"></div>
+      <p id="pay-err" class="auth-error"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn3d" id="pay-cancel">Отмена</button>
+        <button type="button" class="btn3d primary" id="pay-send" disabled>Отправить заявку</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="pro-modes-modal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <h2>Режимы Pro / Ultra</h2>
+      <div id="pro-modes-list" class="pro-modes"></div>
+      <p class="note">Свой характер (коротко):</p>
+      <textarea id="pro-persona-ta" class="edit-ta" rows="2" placeholder="Говори коротко, на ты…"></textarea>
+      <div class="modal-actions">
+        <button type="button" class="btn3d" id="pro-modes-close">Закрыть</button>
+        <button type="button" class="btn3d primary" id="pro-persona-save">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-box"><p id="modal-text"></p><div class="modal-actions" id="modal-actions"></div></div>
   </div>
 
@@ -245,22 +298,22 @@
     <button type="button" id="update-btn">Обновить</button>
   </div>
 
-  <script src="/js/avatars.js?v=063"></script>
-  <script src="/js/richtext.js?v=063"></script>
-  <script src="/js/api.js?v=063"></script>
-  <script src="/js/face.js?v=063"></script>
-  <script src="/js/permissions.js?v=063"></script>
-  <script src="/js/voice.js?v=063"></script>
-  <script src="/js/gestures.js?v=063"></script>
-  <script src="/js/hands.js?v=063"></script>
-  <script src="/js/device.js?v=063"></script>
-  <script src="/js/chat.js?v=063"></script>
-  <script src="/js/photos.js?v=063"></script>
-  <script src="/js/history.js?v=063"></script>
-  <script src="/js/transfer.js?v=063"></script>
-  <script src="/js/airdrop.js?v=063"></script>
-  <script src="/js/learn.js?v=063"></script>
-  <script src="/js/auth.js?v=063"></script>
-  <script src="/js/app.js?v=063"></script>
+  <script src="/js/avatars.js?v=064"></script>
+  <script src="/js/richtext.js?v=064"></script>
+  <script src="/js/api.js?v=064"></script>
+  <script src="/js/face.js?v=064"></script>
+  <script src="/js/permissions.js?v=064"></script>
+  <script src="/js/voice.js?v=064"></script>
+  <script src="/js/gestures.js?v=064"></script>
+  <script src="/js/hands.js?v=064"></script>
+  <script src="/js/device.js?v=064"></script>
+  <script src="/js/chat.js?v=064"></script>
+  <script src="/js/photos.js?v=064"></script>
+  <script src="/js/history.js?v=064"></script>
+  <script src="/js/transfer.js?v=064"></script>
+  <script src="/js/airdrop.js?v=064"></script>
+  <script src="/js/learn.js?v=064"></script>
+  <script src="/js/auth.js?v=064"></script>
+  <script src="/js/app.js?v=064"></script>
 </body>
 </html>

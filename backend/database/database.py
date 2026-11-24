@@ -33,6 +33,9 @@ _ADDED_COLUMNS = [
     ("conversations", "source", "VARCHAR(10)"),
     ("conversations", "chat_id", "INTEGER"),
     ("users", "picture", "VARCHAR(500)"),
+    ("users", "plan", "VARCHAR(20) DEFAULT 'free'"),
+    ("users", "plan_until", "DATETIME"),
+    ("users", "request_count", "INTEGER DEFAULT 0"),
 ]
 
 

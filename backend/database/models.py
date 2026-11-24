@@ -45,6 +45,9 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String(300), nullable=True)
     google_sub: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     picture: Mapped[str | None] = mapped_column(String(500), nullable=True)  # фото из Google-аккаунта
+    plan: Mapped[str] = mapped_column(String(20), default="free")  # free | pro | ultra
+    plan_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    request_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -200,3 +203,19 @@ class GroupMessage(Base):
     user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class PaymentRequest(Base):
+    """Заявка на оплату тарифа: пользователь шлёт скрин чека, админ одобряет в Telegram."""
+
+    __tablename__ = "payment_requests"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    plan: Mapped[str] = mapped_column(String(20))  # pro | ultra
+    period: Mapped[str] = mapped_column(String(20), default="month")  # month | year
+    amount: Mapped[str] = mapped_column(String(20), default="9.99")
+    receipt_data: Mapped[str] = mapped_column(Text, default="")  # data URL или пусто
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | rejected
+    admin_note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

@@ -136,9 +136,17 @@ const Chat = (() => {
         const newChat = !chatId && data.chat_id;
         if (data.chat_id) chatId = data.chat_id;
         if (data.ids && data.ids.USER) userRow.dataset.id = data.ids.USER;
+        if (data.error === "limit_exceeded") {
+          if (dots) dots.remove();
+          if (window.__woodyOnLimit) window.__woodyOnLimit();
+          result = data;
+        } else {
         add("woody", data.reply, !!data.error, null, true, data.ids && data.ids.WOODY);
+        if (localStorage.getItem("woody_pro_mode") === "woody_code") document.body.classList.add("woody-code");
+
         Face.applyState({ ...data.state, activity: "idle" });
         result = data;
+        }
         if (onChanged) onChanged(newChat);
         if (voice && !data.error) { setStatus("Говорю…"); await Voice.speak(data.reply, { tone: data.tone || "calm" }); }
         if (data.learning === true) Learn.begin();

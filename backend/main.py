@@ -22,6 +22,9 @@ from backend.actions.device import capabilities
 from backend.config import BASE_DIR, get_settings, provider_config_problems, setup_logging
 from backend.core.ai_router import AIRouter
 from backend.core.brain import PENDING, Brain, load_emotion, split_tone
+from backend.core.billing import PLANS, FREE_LIMIT, can_request, bump_usage, create_payment, effective_plan, remaining_requests
+from backend.core.admin_notify import notify_payment, decide_payment
+from backend.database.models import PaymentRequest
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
 from backend.core.mind import Mind
@@ -82,14 +85,14 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.3", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.4", lifespan=lifespan)
 
 
 @app.middleware("http")
 async def require_token(request: Request, call_next):
     path = request.url.path
     # Публичны: health, страницы и проверка/погашение transfer-токена (их защищает сам одноразовый токен).
-    public = (path in ("/api/health", "/api/version") or path in ("/api/transfer/check", "/api/transfer/redeem")
+    public = (path in ("/api/health", "/api/version", "/api/admin/telegram") or path in ("/api/transfer/check", "/api/transfer/redeem")
               or path.startswith("/api/auth/") or path == "/api/tts/greeting")
     if settings.access_token and path.startswith("/api/") and not public:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
@@ -120,6 +123,12 @@ def require_user(user: User | None = Depends(get_user_optional)) -> User:
 
 class UserBody(BaseModel):
     name: str = Field(min_length=1, max_length=50)
+
+
+class PaymentBody(BaseModel):
+    plan: str = Field(min_length=3, max_length=20)  # pro | ultra
+    period: str = Field(default="month", max_length=20)
+    receipt: str = Field(default="", max_length=1_800_000)  # data URL скрина
 
 
 class ChatBody(BaseModel):
@@ -279,11 +288,108 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.3", "build": "2026-11-24d"}
+    return {"status": "ok", "service": "woody", "version": "0.6.4", "build": "2026-11-24e"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.3", "build": "2026-11-24d"}
+    return {"version": "0.6.4", "build": "2026-11-24e"}
+
+
+# ------------------------------------------------------------------ тарифы / оплата
+@app.get("/api/plans")
+def api_plans(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    import os
+    plan = effective_plan(user)
+    return {
+        "plans": PLANS,
+        "current": plan,
+        "plan_until": user.plan_until.isoformat() if user.plan_until else None,
+        "used": int(user.request_count or 0),
+        "remaining": remaining_requests(user),
+        "free_limit": FREE_LIMIT,
+        "payment": {
+            "requisites": (os.getenv("PAYMENT_REQUISITES") or "Перевод на карту: укажите PAYMENT_REQUISITES в Variables сервера").strip(),
+            "holder": (os.getenv("PAYMENT_HOLDER") or "").strip(),
+            "note": "После оплаты загрузите скрин чека. Админ проверит и активирует тариф.",
+        },
+    }
+
+
+@app.post("/api/payments")
+async def api_payment(body: PaymentBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    plan = body.plan.lower().strip()
+    if plan not in ("pro", "ultra"):
+        raise HTTPException(422, {"code": "bad_plan", "message": "Только pro или ultra."})
+    if not body.receipt or not body.receipt.startswith("data:image"):
+        raise HTTPException(422, {"code": "need_receipt", "message": "Нужен скриншот чека (фото)."})
+    req = create_payment(db, user, plan, body.period, body.receipt)
+    await notify_payment(db, req, user)
+    return {"id": req.id, "status": req.status, "message": "Заявка отправлена. Админ проверит чек и активирует тариф."}
+
+
+@app.get("/api/usage")
+def api_usage(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    return {
+        "plan": effective_plan(user),
+        "used": int(user.request_count or 0),
+        "remaining": remaining_requests(user),
+        "limit": PLANS[effective_plan(user)]["limit"],
+        "plan_until": user.plan_until.isoformat() if user.plan_until else None,
+    }
+
+
+@app.post("/api/admin/telegram")
+async def admin_telegram_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Webhook Telegram: /approve_ID и /reject_ID от админа."""
+    import os
+    secret = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
+    if secret and request.headers.get("x-telegram-bot-api-secret-token") != secret:
+        raise HTTPException(403, {"detail": "forbidden"})
+    data = await request.json()
+    msg = (data.get("message") or {})
+    text = (msg.get("text") or "").strip()
+    chat_id = str((msg.get("chat") or {}).get("id") or "")
+    admin_chat = (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
+    if admin_chat and chat_id != admin_chat:
+        return {"ok": True}
+    if text.startswith("/approve_"):
+        try:
+            rid = int(text.split("_", 1)[1].split()[0])
+        except ValueError:
+            return {"ok": True}
+        result = decide_payment(db, rid, True)
+        return {"ok": True, "result": result}
+    if text.startswith("/reject_"):
+        try:
+            rid = int(text.split("_", 1)[1].split()[0])
+        except ValueError:
+            return {"ok": True}
+        result = decide_payment(db, rid, False)
+        return {"ok": True, "result": result}
+    if text.startswith("/stats"):
+        from sqlalchemy import func, select
+        users_n = db.scalar(select(func.count()).select_from(User)) or 0
+        pending = db.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.status == "pending")) or 0
+        pro_n = db.scalar(select(func.count()).select_from(User).where(User.plan.in_(["pro", "ultra"]))) or 0
+        # ответ админу
+        token = (os.getenv("TELEGRAM_ADMIN_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        if token and chat_id:
+            import httpx
+            txt = f"📊 Woody stats\nUsers: {users_n}\nPaid plans: {pro_n}\nPending payments: {pending}\nProviders: {len(router.status())}"
+            async with httpx.AsyncClient(timeout=20) as client:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": txt})
+        return {"ok": True}
+    if text.startswith("/users"):
+        rows = db.scalars(select(User).order_by(User.id.desc()).limit(30)).all()
+        lines = [f"{u.id}. {u.name} | {u.plan or 'free'} | req={u.request_count or 0}" for u in rows]
+        token = (os.getenv("TELEGRAM_ADMIN_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        if token and chat_id:
+            import httpx
+            async with httpx.AsyncClient(timeout=20) as client:
+                await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "Users:\n" + "\n".join(lines) or "—"})
+        return {"ok": True}
+    return {"ok": True}
+
 
 
 def _user_payload(db: Session, user: User | None) -> dict:
@@ -381,18 +487,34 @@ async def _see(body: ChatBody, user: User, db: Session, chat: ChatSession) -> di
 
 
 async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -> dict:
+    ok, usage = can_request(user)
+    if not ok:
+        return {
+            "reply": "Твой бесплатный лимит закончился (200 000 запросов). Подключи Pro или Ultra, чтобы продолжить.",
+            "error": "limit_exceeded",
+            "usage": usage,
+            "face": "sad",
+            "tone": "sad",
+            "state": {"emotion": "sad", "activity": "idle"},
+        }
     chat = _own_chat(db, user, body.chat_id, body.text)
     if body.image:
         result = await _see(body, user, db, chat)
     else:
         brain = Brain(db, router)
-        result = await brain.handle(user, body.text.strip(), source, chat.id, pro_mode=body.pro_mode, pro_persona=body.pro_persona)
+        # Woody Code (ultra): принудительный красный code-режим
+        pro_mode = body.pro_mode
+        if effective_plan(user) == "ultra" and (pro_mode or "") in ("woody_code", "code_red"):
+            pro_mode = "woody_code"
+        result = await brain.handle(user, body.text.strip(), source, chat.id, pro_mode=pro_mode, pro_persona=body.pro_persona)
         result["chat_id"] = chat.id
         result["ids"] = dict(brain.memory.last_ids)
+    bump_usage(db, user)
     chat.updated_at = datetime.now(timezone.utc).replace(tzinfo=None)
     if chat.title == "Новый чат":
         chat.title = body.text.strip().replace("\n", " ")[:40] or chat.title
     db.commit()
+    result["usage"] = {"plan": effective_plan(user), "used": int(user.request_count or 0), "remaining": remaining_requests(user)}
     return result
 
 
