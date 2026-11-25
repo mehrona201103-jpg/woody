@@ -28,11 +28,11 @@ PLANS = {
         "price_year": None,
         "limit": FREE_LIMIT,
         "features": [
-            "Чат с Woody",
-            "Голос и группы",
-            f"{FREE_LIMIT:,} запросов всего".replace(",", " "),
-            "Базовая память",
-            "Самообучение Woody",
+            "Чат, голос и группы",
+            f"{FREE_LIMIT:,} запросов".replace(",", " "),
+            "Память о тебе и самообучение",
+            "Стикеры-реакции и быстрые ответы",
+            "Ежедневный мини-квест от Woody",
         ],
     },
     "pro": {
@@ -40,14 +40,14 @@ PLANS = {
         "price_month": PRICES["pro"]["month"],
         "price_year": PRICES["pro"]["year"],
         "currency": CURRENCY,
-        "limit": PRO_MONTH_LIMIT,   # на месяц; на год — без лимита
+        "limit": PRO_MONTH_LIMIT,
         "limit_year": None,
         "features": [
-            f"{PRO_MONTH_LIMIT:,} запросов в месяц (в 3 раза больше Free)".replace(",", " "),
-            "На год — безлимит",
-            "Режимы рядом с кнопкой отправки",
-            "Оформленные ответы по теме запроса",
-            "Свой характер Woody и глубокий разбор фото",
+            f"{PRO_MONTH_LIMIT:,} запросов/мес · год — безлимит".replace(",", " "),
+            "Режимы: Учёба, Код, Агент, Инкогнито",
+            "Красивые ответы с блоками и списками",
+            "Глубокий разбор фото и скринов",
+            "Приоритет в очереди + свой характер",
         ],
     },
     "ultra": {
@@ -58,11 +58,11 @@ PLANS = {
         "limit": ULTRA_MONTH_LIMIT,
         "limit_year": None,
         "features": [
-            f"{ULTRA_MONTH_LIMIT:,} запросов в месяц".replace(",", " "),
-            "На год — безлимит",
-            "Всё из Pro",
-            "Woody Code: терминал, файлы и ZIP-проекты",
-            "Максимум памяти и сильные модели",
+            f"{ULTRA_MONTH_LIMIT:,}/мес · год — безлимит".replace(",", " "),
+            "Woody Code: терминал и красный стиль",
+            "Авто-ZIP проектов (Python, JS, C++…)",
+            "Агент: цели → шаги → результат",
+            "Макс. память, сильные модели, всё из Pro",
         ],
     },
 }
@@ -184,7 +184,7 @@ def create_payment(
         plan=plan,
         period=period,
         amount=str(amount),
-        receipt_data=(receipt_data or "")[:1_500_000],
+        receipt_data=(receipt_data or "")[:5_000_000],
         status="pending",
     )
     session.add(row)

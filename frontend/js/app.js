@@ -378,6 +378,37 @@
       feats.slice(0, 6).forEach((f) => { const li = document.createElement("li"); li.textContent = f; ul.append(li); });
     }
   }
+
+  /** Сжимает фото чека до ~JPEG 0.72 / max 1280px — иначе телефонный скрин не проходит лимит API. */
+  function compressImage(file, maxSide = 1280, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      if (!file || !file.type || !file.type.startsWith("image/")) {
+        reject(new Error("Нужно изображение (JPG/PNG/WEBP)"));
+        return;
+      }
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        if (!w || !h) { reject(new Error("Не удалось прочитать фото")); return; }
+        const scale = Math.min(1, maxSide / Math.max(w, h));
+        w = Math.round(w * scale); h = Math.round(h * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        let data = canvas.toDataURL("image/jpeg", quality);
+        // если всё ещё огромный — сильнее жмём
+        if (data.length > 900_000) data = canvas.toDataURL("image/jpeg", 0.55);
+        if (data.length > 1_200_000) data = canvas.toDataURL("image/jpeg", 0.4);
+        resolve(data);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Не удалось открыть файл")); };
+      img.src = url;
+    });
+  }
+
   async function openPlansModal() {
     const modal = $("plans-modal");
     try {
@@ -405,7 +436,7 @@
     $("pay-title").textContent = plan === "ultra" ? "Оплата Ultra" : "Оплата Pro";
     $("pay-amount").textContent = `${PRICE[plan][payPeriod]} сомони / ${payPeriod === "year" ? "год" : "месяц"}`;
     const info = window.__payInfo || {};
-    $("pay-req").textContent = [info.holder, info.requisites].filter(Boolean).join("\\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
+    $("pay-req").textContent = [info.holder, info.requisites].filter(Boolean).join("\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
     $("pay-preview").classList.add("hidden");
     $("pay-preview").innerHTML = "";
     $("pay-err").textContent = "";
@@ -414,28 +445,40 @@
   }
   $("pay-cancel").onclick = () => $("pay-modal").classList.add("hidden");
   $("pay-pick").onclick = () => $("pay-file").click();
-  $("pay-file").onchange = () => {
+  $("pay-file").onchange = async () => {
     const f = $("pay-file").files && $("pay-file").files[0];
     if (!f) return;
-    const r = new FileReader();
-    r.onload = () => {
-      payReceipt = r.result;
+    $("pay-err").textContent = "Сжимаю фото…";
+    $("pay-send").disabled = true;
+    try {
+      payReceipt = await compressImage(f);
       $("pay-preview").classList.remove("hidden");
       $("pay-preview").innerHTML = "";
       const img = document.createElement("img"); img.src = payReceipt; $("pay-preview").append(img);
+      $("pay-err").textContent = "";
       $("pay-send").disabled = false;
-    };
-    r.readAsDataURL(f);
+    } catch (e) {
+      payReceipt = "";
+      $("pay-err").textContent = e.message || "Не удалось загрузить фото";
+      $("pay-send").disabled = true;
+    }
   };
   $("pay-send").onclick = async () => {
     $("pay-err").textContent = "";
+    if (!payReceipt || !payReceipt.startsWith("data:image")) {
+      $("pay-err").textContent = "Сначала загрузи скрин чека";
+      return;
+    }
     $("pay-send").disabled = true;
+    $("pay-err").textContent = "Отправляю заявку…";
     try {
       const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPeriod, receipt: payReceipt }) });
       $("pay-modal").classList.add("hidden");
-      Chat.add("woody", res.message || "Заявка отправлена. Жди одобрения админа.");
+      $("pay-err").textContent = "";
+      Chat.add("woody", res.message || "Заявка отправлена. Админ проверит чек.");
     } catch (e) {
-      $("pay-err").textContent = e.userMessage || e.message || "Не удалось отправить";
+      console.error("[Woody pay]", e);
+      $("pay-err").textContent = e.userMessage || e.message || "Не удалось отправить чек";
       $("pay-send").disabled = false;
     }
   };
@@ -468,22 +511,40 @@
   $("don-amount").oninput = donCheck;
   $("don-cancel").onclick = () => $("donate-modal").classList.add("hidden");
   $("don-pick").onclick = () => $("don-file").click();
-  $("don-file").onchange = () => {
-    const f = $("don-file").files && $("don-file").files[0]; if (!f) return;
-    const r = new FileReader();
-    r.onload = () => {
-      donReceipt = r.result; $("don-preview").classList.remove("hidden"); $("don-preview").innerHTML = "";
-      const img = document.createElement("img"); img.src = donReceipt; $("don-preview").append(img); donCheck();
-    };
-    r.readAsDataURL(f);
+  $("don-file").onchange = async () => {
+    const f = $("don-file").files && $("don-file").files[0];
+    if (!f) return;
+    $("don-err").textContent = "Сжимаю фото…";
+    try {
+      donReceipt = await compressImage(f);
+      $("don-preview").classList.remove("hidden");
+      $("don-preview").innerHTML = "";
+      const img = document.createElement("img"); img.src = donReceipt; $("don-preview").append(img);
+      $("don-err").textContent = "";
+      donCheck();
+    } catch (e) {
+      donReceipt = "";
+      $("don-err").textContent = e.message || "Ошибка фото";
+      donCheck();
+    }
   };
   $("don-send").onclick = async () => {
-    $("don-err").textContent = ""; $("don-send").disabled = true;
+    $("don-err").textContent = "";
+    if (!donReceipt || !donReceipt.startsWith("data:image")) {
+      $("don-err").textContent = "Загрузи скрин перевода";
+      return;
+    }
+    $("don-send").disabled = true;
+    $("don-err").textContent = "Отправляю…";
     try {
       const r = await api("/donations", { method: "POST", body: JSON.stringify({ amount: $("don-amount").value, note: $("don-note").value, receipt: donReceipt }) });
       $("donate-modal").classList.add("hidden"); sheet.classList.remove("on");
+      $("don-err").textContent = "";
       Chat.add("woody", r.message || "Спасибо за поддержку!");
-    } catch (e) { $("don-err").textContent = e.userMessage || e.message || "Не удалось отправить"; $("don-send").disabled = false; }
+    } catch (e) {
+      $("don-err").textContent = e.userMessage || e.message || "Не удалось отправить";
+      $("don-send").disabled = false;
+    }
   };
 
   // ---- режимы рядом с кнопкой отправки (Pro / Ultra)
@@ -538,7 +599,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.8";
+  const LOCAL_VER = "0.6.9";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });

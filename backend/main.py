@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.8", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.9", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -138,7 +138,7 @@ class UserBody(BaseModel):
 class PaymentBody(BaseModel):
     plan: str = Field(min_length=3, max_length=20)  # pro | ultra
     period: str = Field(default="month", max_length=20)
-    receipt: str = Field(default="", max_length=1_800_000)  # data URL скрина
+    receipt: str = Field(default="", max_length=6_000_000)  # data URL скрина (после сжатия на клиенте)
 
 
 class ChatBody(BaseModel):
@@ -298,11 +298,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.8", "build": "2026-11-24g"}
+    return {"status": "ok", "service": "woody", "version": "0.6.9", "build": "2026-11-26a"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.8", "build": "2026-11-24g"}
+    return {"version": "0.6.9", "build": "2026-11-26a"}
 
 
 # ------------------------------------------------------------------ тарифы / оплата
@@ -334,14 +334,24 @@ async def api_payment(body: PaymentBody, user: User = Depends(require_user), db:
     plan = body.plan.lower().strip()
     if plan not in ("pro", "ultra"):
         raise HTTPException(422, {"code": "bad_plan", "message": "Только pro или ultra."})
-    if not body.receipt or not body.receipt.startswith("data:image"):
-        raise HTTPException(422, {"code": "need_receipt", "message": "Нужен скриншот чека (фото)."})
-    req = create_payment(db, user, plan, body.period, body.receipt)
-    sent = await notify_payment(db, req, user)
+    if not body.receipt or not str(body.receipt).startswith("data:image"):
+        raise HTTPException(422, {"code": "need_receipt", "message": "Нужен скриншот чека (фото JPG/PNG)."})
+    if len(body.receipt) < 200:
+        raise HTTPException(422, {"code": "need_receipt", "message": "Файл чека пустой или повреждён."})
+    try:
+        req = create_payment(db, user, plan, body.period, body.receipt)
+    except Exception as exc:
+        logger.exception("create_payment: %s", exc)
+        raise HTTPException(500, {"code": "pay_save", "message": "Не удалось сохранить заявку. Попробуй ещё раз."})
+    try:
+        sent = await notify_payment(db, req, user)
+    except Exception as exc:
+        logger.exception("notify_payment: %s", exc)
+        sent = False
     msg = "Заявка отправлена. Админ проверит чек и активирует тариф."
     if not sent:
-        msg = "Заявка сохранена, но Telegram-бот не настроен или не ответил. Проверь TELEGRAM_ADMIN_BOT_TOKEN и TELEGRAM_ADMIN_CHAT_ID."
-    return {"id": req.id, "status": req.status, "notified": sent, "message": msg}
+        msg = "Заявка сохранена. Если админ-бот настроен — уведомление уйдёт. Иначе проверь TELEGRAM_ADMIN_BOT_TOKEN и CHAT_ID."
+    return {"id": req.id, "status": req.status, "notified": bool(sent), "message": msg}
 
 
 class FeedbackBody(BaseModel):
@@ -351,7 +361,7 @@ class FeedbackBody(BaseModel):
 class DonationBody(BaseModel):
     amount: str = Field(min_length=1, max_length=12)
     note: str = Field(default="", max_length=300)
-    receipt: str = Field(default="", max_length=1_800_000)
+    receipt: str = Field(default="", max_length=6_000_000)
 
 
 @app.post("/api/feedback")
