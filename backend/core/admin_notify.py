@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.billing import activate_plan
-from backend.database.models import PaymentRequest, User
+from backend.database.models import Feedback, PaymentRequest, User
 
 logger = logging.getLogger("woody.admin")
 
@@ -80,6 +80,23 @@ async def notify_payment(session: Session, req: PaymentRequest, user: User) -> b
         logger.warning("Бот: нет TELEGRAM_ADMIN_CHAT_ID — укажи id чата админа")
         return False
 
+    if req.plan == "donate":
+        text = (
+            f"🎁 Пожертвование #{req.id}\n"
+            f"👤 {user.name} (id={user.id})\n"
+            f"📧 {user.email or '—'}\n"
+            f"💰 {req.amount} сомони\n"
+            f"💬 {(req.admin_note or '').strip() or '—'}\n\n"
+            f"✅ Получено: /approve_{req.id}\n"
+            f"❌ Не пришло: /reject_{req.id}"
+        )
+        photo = _decode_data_url(req.receipt_data or "")
+        if photo:
+            res = await tg_send_photo_bytes(chat, photo, caption=text)
+            if res.get("ok"):
+                return True
+        return bool((await tg_send("sendMessage", chat_id=chat, text=text)).get("ok"))
+
     text = (
         f"💳 Заявка #{req.id}\n"
         f"👤 {user.name} (id={user.id})\n"
@@ -113,6 +130,9 @@ def decide_payment(session: Session, req_id: int, approve: bool, note: str = "")
     row.admin_note = note or ""
     row.decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
     session.add(row)
+    if approve and row.plan == "donate":
+        session.commit()
+        return f"💚 Пожертвование #{req_id} получено ({row.amount} сомони от {user.name}). Спасибо ему!"
     if approve:
         activate_plan(session, user, row.plan, row.period)
         return f"✅ Заявка #{req_id} одобрена → {user.name} получил {row.plan.upper()}"
@@ -125,7 +145,8 @@ HELP = (
     "/start — это меню\n"
     "/stats — статистика приложения\n"
     "/users — последние пользователи\n"
-    "/pending — заявки на оплату\n"
+    "/pending — заявки на оплату и пожертвования\n"
+    "/wishes — последние пожелания пользователей\n"
     "/approve_ID — одобрить заявку\n"
     "/reject_ID — отклонить\n"
     "/me — узнать свой chat id\n\n"
@@ -191,6 +212,14 @@ async def handle_update(db: Session, data: dict, providers_count: int = 0) -> No
         await tg_send("sendMessage", chat_id=chat_id, text=result)
         return
 
+    if text.startswith("/wishes"):
+        rows = db.scalars(select(Feedback).order_by(Feedback.id.desc()).limit(10)).all()
+        if not rows:
+            await tg_send("sendMessage", chat_id=chat_id, text="Пока нет пожеланий.")
+        else:
+            await tg_send("sendMessage", chat_id=chat_id, text="💡 Последние пожелания:\n\n" + "\n\n".join(f"#{r.id}: {r.text[:300]}" for r in rows))
+        return
+
     if text.startswith("/stats"):
         users_n = db.scalar(select(func.count()).select_from(User)) or 0
         pending = db.scalar(select(func.count()).select_from(PaymentRequest).where(PaymentRequest.status == "pending")) or 0
@@ -250,3 +279,13 @@ async def setup_webhook(public_base: str) -> None:
             logger.info("webhook info: %s", info.json())
     except Exception as exc:
         logger.error("setWebhook failed: %s", exc)
+
+
+async def notify_feedback(fb: Feedback, user: User) -> bool:
+    chat = admin_chat_id()
+    if not bot_token() or not chat:
+        return False
+    text = (
+        f"💡 Пожелание #{fb.id}\n👤 {user.name} (id={user.id}) · {user.plan or 'free'}\n📧 {user.email or '—'}\n\n{fb.text[:3500]}"
+    )
+    return bool((await tg_send("sendMessage", chat_id=chat, text=text)).get("ok"))

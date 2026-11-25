@@ -62,7 +62,7 @@ def summary(reply: str) -> str:
     return text
 
 
-def build(export_dir: Path, user_id: int, request: str, files: list[tuple[str, str]]) -> dict:
+def build(export_dir: Path, user_id: int, request: str, files: list[tuple[str, str]], folder: str | None = None) -> dict:
     """Один файл → просто файл. Несколько → папка (имя по запросу) упакована в ZIP."""
     export_dir.mkdir(parents=True, exist_ok=True)
     token = secrets.token_urlsafe(10).replace("-", "a").replace("_", "b")
@@ -71,7 +71,7 @@ def build(export_dir: Path, user_id: int, request: str, files: list[tuple[str, s
         data = files[0][1].encode("utf-8")
         kind = "file"
     else:
-        folder = slug(request)
+        folder = folder or slug(request)
         name = folder + ".zip"
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

@@ -2,6 +2,11 @@
 
 Голосовой AI-компаньон: FastAPI + SQLite + vanilla JS. Woody Core (личность, память, эмоции, права) отделён от AI-моделей (AI Router).
 
+## Быстрый запуск
+Windows: двойной клик по `start.bat`. Linux/macOS: `./start.sh`. Скрипт сам создаст окружение, поставит зависимости, создаст `.env` (впишите туда ключи ИИ) и откроет http://localhost:8000.
+
+**Несколько ИИ сразу:** Woody Code запускает ВСЕ настроенные ключи параллельно (AI_PROVIDER_1..7, OPENAI_API_KEY, OPENAI_API_KEY_2, OPENROUTER, GROQ, DEEPSEEK), сравнивает ответы и собирает лучший.
+
 ## Локальный запуск
 ```bash
 python -m venv .venv && source .venv/bin/activate

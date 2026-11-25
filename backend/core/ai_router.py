@@ -31,7 +31,7 @@ class AIProvider(ABC):
     tasks: tuple[str, ...]
 
     @abstractmethod
-    async def complete(self, messages: list[dict[str, str]]) -> str: ...
+    async def complete(self, messages: list[dict[str, str]], **opts) -> str: ...
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -46,13 +46,16 @@ class OpenAICompatibleProvider(AIProvider):
             text = text.replace(self.cfg.api_key, "***")
         return re.sub(r"(sk|gsk|xai|AIza)[A-Za-z0-9_\-*.]{6,}", "***", text)
 
-    async def complete(self, messages: list[dict[str, str]]) -> str:
+    async def complete(self, messages: list[dict[str, str]], **opts) -> str:
         try:
-            async with httpx.AsyncClient(timeout=self.cfg.timeout) as client:
+            payload = {"model": self.cfg.model, "messages": messages, "temperature": opts.get("temperature", 0.7)}
+            if opts.get("max_tokens"):
+                payload["max_tokens"] = opts["max_tokens"]
+            async with httpx.AsyncClient(timeout=opts.get("timeout") or self.cfg.timeout) as client:
                 resp = await client.post(
                     f"{self.cfg.base_url}/chat/completions",
                     headers={"Authorization": f"Bearer {self.cfg.api_key}"},
-                    json={"model": self.cfg.model, "messages": messages, "temperature": 0.7},
+                    json=payload,
                 )
             resp.raise_for_status()
             return resp.json()["choices"][0]["message"]["content"].strip()
@@ -92,13 +95,27 @@ class AIRouter:
             return specific
         return list(self.providers)
 
-    async def complete(self, messages: list[dict[str, str]], task: str = "conversation") -> tuple[str, str]:
+    async def complete_all(self, messages: list[dict[str, str]], task: str = "conversation", **opts) -> list[tuple[str, str]]:
+        """Спрашивает ВСЕ подходящие ИИ одновременно. Возвращает [(имя, текст)] тех, кто ответил."""
+        import asyncio
+
+        async def one(p):
+            try:
+                return p.name, await p.complete(messages, **opts)
+            except ProviderError as exc:
+                logger.warning("Провайдер недоступен (parallel): %s", exc)
+                return p.name, None
+
+        res = await asyncio.gather(*(one(p) for p in self.candidates(task)))
+        return [(n, t) for n, t in res if t]
+
+    async def complete(self, messages: list[dict[str, str]], task: str = "conversation", **opts) -> tuple[str, str]:
         """Возвращает (текст, имя провайдера). Переключается на следующий при сбое."""
         errors: list[str] = []
         statuses: list[int | None] = []
         for provider in self.candidates(task):
             try:
-                return await provider.complete(messages), provider.name
+                return await provider.complete(messages, **opts), provider.name
             except ProviderError as exc:
                 logger.warning("Провайдер недоступен: %s", exc)
                 errors.append(str(exc))

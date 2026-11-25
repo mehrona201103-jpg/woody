@@ -343,6 +343,13 @@
         body.append(note(`Тариф ${plan.toUpperCase()} ${per}. Режимы — кнопка рядом с отправкой в чате.`));
       }
       body.append(note("Оплата: перевод → скрин чека → проверка админом в Telegram."));
+
+      body.append(section("Обратная связь"));
+      const wishBtn = h("button", { className: "btn3d wide", textContent: "💡 Пожелание по улучшению" });
+      wishBtn.onclick = () => { $("wish-ta").value = ""; $("wish-err").textContent = ""; $("wish-modal").classList.remove("hidden"); };
+      const donBtn = h("button", { className: "btn3d wide", textContent: "❤️ Пожертвовать" });
+      donBtn.onclick = openDonate;
+      body.append(wishBtn, donBtn);
     } catch (e) {
       console.error("[Woody settings]", e);
       body.append(note("Не удалось загрузить настройки."));
@@ -433,6 +440,52 @@
     }
   };
 
+  // ---- пожелания
+  $("wish-cancel").onclick = () => $("wish-modal").classList.add("hidden");
+  $("wish-send").onclick = async () => {
+    const t = $("wish-ta").value.trim();
+    if (t.length < 5) { $("wish-err").textContent = "Напиши хотя бы пару слов."; return; }
+    $("wish-send").disabled = true; $("wish-err").textContent = "";
+    try {
+      const r = await api("/feedback", { method: "POST", body: JSON.stringify({ text: t }) });
+      $("wish-modal").classList.add("hidden"); sheet.classList.remove("on");
+      Chat.add("woody", r.message || "Спасибо! Пожелание отправлено.");
+    } catch (e) { $("wish-err").textContent = e.userMessage || "Не удалось отправить"; }
+    $("wish-send").disabled = false;
+  };
+
+  // ---- пожертвования (та же схема, что оплата: реквизиты → чек → админу в Telegram)
+  let donReceipt = "";
+  async function openDonate() {
+    try { const d = await api("/plans"); window.__payInfo = d.payment || {}; } catch (_) { /* — */ }
+    const info = window.__payInfo || {};
+    $("don-req").textContent = [info.holder, info.requisites].filter(Boolean).join("\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
+    donReceipt = ""; $("don-amount").value = ""; $("don-note").value = ""; $("don-err").textContent = "";
+    $("don-preview").classList.add("hidden"); $("don-preview").innerHTML = ""; $("don-send").disabled = true;
+    $("donate-modal").classList.remove("hidden");
+  }
+  const donCheck = () => { $("don-send").disabled = !(donReceipt && parseFloat(($("don-amount").value || "").replace(",", ".")) > 0); };
+  $("don-amount").oninput = donCheck;
+  $("don-cancel").onclick = () => $("donate-modal").classList.add("hidden");
+  $("don-pick").onclick = () => $("don-file").click();
+  $("don-file").onchange = () => {
+    const f = $("don-file").files && $("don-file").files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => {
+      donReceipt = r.result; $("don-preview").classList.remove("hidden"); $("don-preview").innerHTML = "";
+      const img = document.createElement("img"); img.src = donReceipt; $("don-preview").append(img); donCheck();
+    };
+    r.readAsDataURL(f);
+  };
+  $("don-send").onclick = async () => {
+    $("don-err").textContent = ""; $("don-send").disabled = true;
+    try {
+      const r = await api("/donations", { method: "POST", body: JSON.stringify({ amount: $("don-amount").value, note: $("don-note").value, receipt: donReceipt }) });
+      $("donate-modal").classList.add("hidden"); sheet.classList.remove("on");
+      Chat.add("woody", r.message || "Спасибо за поддержку!");
+    } catch (e) { $("don-err").textContent = e.userMessage || e.message || "Не удалось отправить"; $("don-send").disabled = false; }
+  };
+
   // ---- режимы рядом с кнопкой отправки (Pro / Ultra)
   const MODES = [["default", "Обычный"], ["study", "Учёба"], ["code", "Код"], ["write", "Тексты"], ["deal", "Переговоры"], ["agent", "Агент"], ["ghost", "Инкогнито"]];
   function renderModesMenu() {
@@ -485,7 +538,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.7";
+  const LOCAL_VER = "0.6.8";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });

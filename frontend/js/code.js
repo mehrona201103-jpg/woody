@@ -11,8 +11,9 @@ const WoodyCode = (() => {
     term.appendChild(d); term.scrollTop = term.scrollHeight; return d;
   }
   function welcome() {
-    line('<b class="red">Woody Code</b> — опиши задачу, а я напишу код.', "dim");
-    line("Один файл — отдам файлом. Большой проект — соберу папку, упакую в ZIP.", "dim");
+    line('<b class="red">Woody Code</b> — агент-программист. Опиши задачу.', "dim");
+    line("Планирую → пишу всеми ИИ сразу → сравниваю → проверяю → исправляю → отдаю ZIP с start.bat / start.sh.", "dim");
+    line("Следующие сообщения дорабатывают текущий проект. «/new» — начать с нуля.", "dim");
   }
   function open(exitCb) {
     onExit = exitCb; document.body.classList.add("woody-code");
@@ -39,21 +40,45 @@ const WoodyCode = (() => {
     };
   }
 
+  const ICON = { step: "◐", plan: "◆", ok: "✓", warn: "!", err: "✗" };
+  let newProject = false;
+
   async function submit(text) {
     text = text.trim(); if (!text || busy) return;
+    if (/^\/new\b/i.test(text)) { newProject = true; line("Новый проект: прошлый забыл. Опиши задачу.", "dim"); return; }
     busy = true; run.disabled = true;
     line('<span class="red">❯</span> ' + esc(text), "cp-user");
-    const spin = line('<span class="cp-spin">✻</span> Woody пишет код…', "dim");
     Face.setActivity("thinking");
+    let spin = null;
     try {
-      const data = await Api.request("/code", { method: "POST", body: JSON.stringify({ text }) });
-      spin.remove();
-      if (data.error === "limit_exceeded" && window.__woodyOnLimit) window.__woodyOnLimit(data.reply, data.usage);
-      if (data.reply) line(Rich.render(data.reply), "cp-out rich");
-      if (data.file) { fileCard(data.file); Face.setEmotion("happy"); }
-      else if (!data.error) line("Не нашёл код в ответе. Уточни задачу.", "dim");
+      const start = await Api.request("/code", { method: "POST", body: JSON.stringify({ text, new_project: newProject }) });
+      newProject = false;
+      if (start.error === "limit_exceeded") {
+        if (window.__woodyOnLimit) window.__woodyOnLimit(start.reply, start.usage);
+        line(esc(start.reply), "cp-err"); return;
+      }
+      spin = line('<span class="cp-spin">✻</span> Агент запущен…', "dim");
+      let since = 0, result = null;
+      for (let i = 0; i < 400; i++) {                         // до ~10 минут
+        await new Promise((r) => setTimeout(r, 1500));
+        const st = await Api.request(`/code/job/${start.job}?since=${since}`);
+        for (const sp of st.steps) {
+          spin.querySelector(".cp-spin") && (spin.innerHTML = "");
+          const l = line(`<span class="st st-${sp.kind}">${ICON[sp.kind] || "◐"}</span> ${esc(sp.text)}`, sp.kind === "err" ? "cp-err" : "");
+          term.insertBefore(l, spin);
+        }
+        since = st.next;
+        if (spin && !spin.innerHTML) spin.innerHTML = '<span class="cp-spin">✻</span> работаю…';
+        term.scrollTop = term.scrollHeight;
+        if (st.done) { result = st.result; break; }
+      }
+      spin.remove(); spin = null;
+      if (!result) { line("Слишком долго. Попробуй упростить задачу.", "cp-err"); return; }
+      if (result.reply) line(Rich.render(result.reply), "cp-out rich");
+      if (result.file) { fileCard(result.file); Face.setEmotion("happy"); }
+      if (result.edited) line("Проект дорабатывается по твоим просьбам. Новая задача — «/new».", "dim");
     } catch (e) {
-      spin.remove();
+      if (spin) spin.remove();
       if (e.code !== "auth") line((e.code === "need_ultra" ? "Woody Code доступен на тарифе Ultra." : e.userMessage || "Не удалось подключиться к Woody."), "cp-err");
       Face.setEmotion("confused");
     } finally { busy = false; Face.setActivity("idle"); run.disabled = !ta.value.trim(); }

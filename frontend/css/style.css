@@ -484,3 +484,6 @@ body.woody-code .btn3d.primary{background:linear-gradient(135deg,#ef4444,#991b1b
 .cp-input button{width:38px;height:38px;border-radius:10px;border:0;background:#ef4444;color:#fff;font-size:18px;cursor:pointer}
 .cp-input button:disabled{background:#3a2323;color:#7a5a5a}
 body.woody-code .code-page .wface .wbrow,body.woody-code .code-page .wface .wmouth{stroke:#ff6b6b}
+
+.st{display:inline-block;width:1.2em;color:#ff8a8a}
+.st-ok{color:#34d399}.st-warn{color:#fbbf24}.st-err{color:#ff5c5c}.st-plan{color:#ff5c5c}

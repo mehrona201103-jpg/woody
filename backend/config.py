@@ -79,6 +79,7 @@ def load_providers() -> list[ProviderConfig]:
     # Альтернативные имена ключей OpenAI / Groq / DeepSeek
     for name, env_key, default_url, default_model in (
         ("openai", "OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini"),
+        ("openai2", "OPENAI_API_KEY_2", "https://api.openai.com/v1", "gpt-4o"),
         ("groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.1-8b-instant"),
         ("deepseek", "DEEPSEEK_API_KEY", "https://api.deepseek.com", "deepseek-chat"),
     ):
@@ -90,9 +91,9 @@ def load_providers() -> list[ProviderConfig]:
                     name=name,
                     base_url=default_url,
                     api_key=k,
-                    model=os.getenv(f"{name.upper()}_MODEL", default_model).strip(),
+                    model=os.getenv("OPENAI_MODEL_2" if name == "openai2" else f"{name.upper()}_MODEL", default_model).strip(),
                     tasks=("conversation", "vision"),
-                    timeout=45.0,
+                    timeout=60.0,
                 )
             )
     return providers

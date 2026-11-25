@@ -13,7 +13,7 @@ import asyncio
 import httpx
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -23,9 +23,9 @@ from backend.config import BASE_DIR, get_settings, provider_config_problems, set
 from backend.core.ai_router import AIRouter
 from backend.core.brain import PENDING, Brain, load_emotion, split_tone
 from backend.core.billing import PLANS, FREE_LIMIT, PRICES, CURRENCY, RESET_HOURS, can_request, bump_usage, create_payment, effective_plan, remaining_requests, current_limit
-from backend.core import codegen
-from backend.core.admin_notify import notify_payment, decide_payment, handle_update, setup_webhook, bot_token
-from backend.database.models import PaymentRequest
+from backend.core import codegen, agent as code_agent
+from backend.core.admin_notify import notify_feedback, notify_payment, decide_payment, handle_update, setup_webhook, bot_token
+from backend.database.models import Feedback, PaymentRequest
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
 from backend.core.mind import Mind
@@ -95,7 +95,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.7", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.8", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -298,11 +298,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.7", "build": "2026-11-24g"}
+    return {"status": "ok", "service": "woody", "version": "0.6.8", "build": "2026-11-24g"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.7", "build": "2026-11-24g"}
+    return {"version": "0.6.8", "build": "2026-11-24g"}
 
 
 # ------------------------------------------------------------------ тарифы / оплата
@@ -342,6 +342,45 @@ async def api_payment(body: PaymentBody, user: User = Depends(require_user), db:
     if not sent:
         msg = "Заявка сохранена, но Telegram-бот не настроен или не ответил. Проверь TELEGRAM_ADMIN_BOT_TOKEN и TELEGRAM_ADMIN_CHAT_ID."
     return {"id": req.id, "status": req.status, "notified": sent, "message": msg}
+
+
+class FeedbackBody(BaseModel):
+    text: str = Field(min_length=5, max_length=3000)
+
+
+class DonationBody(BaseModel):
+    amount: str = Field(min_length=1, max_length=12)
+    note: str = Field(default="", max_length=300)
+    receipt: str = Field(default="", max_length=1_800_000)
+
+
+@app.post("/api/feedback")
+async def api_feedback(body: FeedbackBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
+    recent = db.scalar(select(func.count()).select_from(Feedback).where(Feedback.user_id == user.id, Feedback.created_at > since)) or 0
+    if recent >= 5:
+        raise HTTPException(429, {"code": "too_many", "message": "Много пожеланий за час. Попробуй позже."})
+    fb = Feedback(user_id=user.id, text=body.text.strip())
+    db.add(fb); db.commit(); db.refresh(fb)
+    sent = await notify_feedback(fb, user)
+    return {"ok": True, "notified": sent, "message": "Спасибо! Пожелание отправлено — админ рассмотрит и улучшит Woody."}
+
+
+@app.post("/api/donations")
+async def api_donation(body: DonationBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    try:
+        amount = float(body.amount.replace(",", ".").strip())
+    except ValueError:
+        raise HTTPException(422, {"code": "bad_amount", "message": "Укажи сумму числом."})
+    if not (0 < amount <= 1_000_000):
+        raise HTTPException(422, {"code": "bad_amount", "message": "Сумма должна быть больше нуля."})
+    if not body.receipt or not body.receipt.startswith("data:image"):
+        raise HTTPException(422, {"code": "need_receipt", "message": "Нужен скриншот чека (фото)."})
+    row = PaymentRequest(user_id=user.id, plan="donate", period="once", amount=f"{amount:g}", receipt_data=body.receipt[:1_500_000],
+                         status="pending", admin_note=body.note.strip())
+    db.add(row); db.commit(); db.refresh(row)
+    sent = await notify_payment(db, row, user)
+    return {"ok": True, "notified": sent, "message": "Спасибо за поддержку! Чек отправлен админу."}
 
 
 @app.get("/api/usage")
@@ -549,30 +588,56 @@ EXPORT_DIR = Path(settings.db_path).parent / "exports"
 
 
 class CodeBody(BaseModel):
-    text: str = Field(min_length=1, max_length=4000)
+    text: str = Field(min_length=1, max_length=6000)
+    new_project: bool = False
+
+
+CODE_JOBS: dict[str, "code_agent.Job"] = {}
+CODE_WS: dict[int, dict] = {}          # рабочий проект каждого пользователя (для доработок)
+
+
+def _gc_jobs() -> None:
+    import time
+    for k in [k for k, j in CODE_JOBS.items() if time.time() - j.created > 3600]:
+        CODE_JOBS.pop(k, None)
 
 
 @app.post("/api/code")
 async def woody_code(body: CodeBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    """Запускает агента Woody Code. Прогресс — GET /api/code/job/{id}."""
     if effective_plan(user) != "ultra":
         raise HTTPException(403, {"code": "need_ultra", "message": "Woody Code доступен на тарифе Ultra."})
     ok, usage = can_request(user, db)
     if not ok:
         return {"error": "limit_exceeded", "reply": "Лимит закончился. Подожди сброса или возьми тариф на год.", "usage": usage}
-    try:
-        reply, _ = await router.complete([{"role": "system", "content": codegen.CODE_SYSTEM}, {"role": "user", "content": body.text.strip()}])
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Woody Code: AI недоступен: %s", exc)
-        return {"error": "ai_unavailable", "reply": "Сейчас не могу связаться с моделью. Попробуй позже."}
-    files = codegen.parse_files(reply)
-    out: dict = {"reply": codegen.summary(reply) or "Готово.", "file": None, "files": []}
-    if files:
-        info = codegen.build(EXPORT_DIR, user.id, body.text, files)
-        out["file"] = info
-        out["files"] = info["files"]
-        out["code"] = {p: c for p, c in files} if len(files) == 1 else None
-    bump_usage(db, user)
-    return out
+    if any(j.user_id == user.id and not j.done for j in CODE_JOBS.values()):
+        raise HTTPException(409, {"code": "busy", "message": "Woody Code ещё работает над прошлой задачей."})
+    import secrets
+    _gc_jobs()
+    job = code_agent.Job(user.id)
+    jid = secrets.token_urlsafe(8).replace("-", "a").replace("_", "b")
+    CODE_JOBS[jid] = job
+    uid = user.id
+
+    def count() -> None:
+        with SessionLocal() as s2:
+            u2 = s2.get(User, uid)
+            if u2:
+                bump_usage(s2, u2)
+
+    ws = CODE_WS.setdefault(uid, {})
+    if body.new_project:
+        ws.clear()
+    asyncio.create_task(code_agent.run_agent(router, job, body.text.strip(), ws, EXPORT_DIR, body.new_project, count))
+    return {"job": jid}
+
+
+@app.get("/api/code/job/{jid}")
+def woody_code_job(jid: str, since: int = 0, user: User = Depends(require_user)) -> dict:
+    job = CODE_JOBS.get(jid)
+    if job is None or job.user_id != user.id:
+        raise HTTPException(404, {"code": "no_job", "message": "Задача не найдена."})
+    return {"steps": job.steps[since:], "next": len(job.steps), "done": job.done, "result": job.result if job.done else None}
 
 
 @app.get("/api/code/download/{token}")
