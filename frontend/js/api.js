@@ -87,8 +87,22 @@ const Api = (() => {
     return res.blob();
   }
 
+  /** GET файла с авторизацией и мгновенное скачивание в браузере. */
+  async function download(path, filename) {
+    const headers = {};
+    const token = store.get(TOKEN_KEY), session = store.get(SESSION_KEY);
+    if (token) headers.Authorization = "Bearer " + token;
+    if (session) headers["X-Woody-Session"] = session;
+    const res = await fetch(BASE + "/api" + path, { headers });
+    if (!res.ok) throw new ApiError(res.status, "error", res.statusText, "Файл не найден или устарел.");
+    const url = URL.createObjectURL(await res.blob());
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  }
+
   return {
-    request, blob, health, ApiError,
+    request, blob, download, health, ApiError,
     setSession: (s) => store.set(SESSION_KEY, s),
     clearSession: () => store.del(SESSION_KEY),
     hasSession: () => !!store.get(SESSION_KEY),

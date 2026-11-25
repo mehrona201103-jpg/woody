@@ -139,7 +139,7 @@ class Brain:
             **extra,
         }
 
-    async def handle(self, user: User, text: str, source: str = "text", chat_id: int | None = None, pro_mode: str | None = None, pro_persona: str | None = None) -> dict[str, Any]:
+    async def handle(self, user: User, text: str, source: str = "text", chat_id: int | None = None, pro_mode: str | None = None, pro_persona: str | None = None, paid: bool = False) -> dict[str, Any]:
         self.memory.chat_id = chat_id
         self.permissions = PermissionManager(self.session, user.id)
         emotion = load_emotion(self.session, user.id)
@@ -207,6 +207,10 @@ class Brain:
         if source != "voice":
             system += ("\n\nЕсли просят код — пиши полностью рабочий, проверенный и без ошибок код, обязательно в блоке ```язык … ```, "
                        "с короткими комментариями и краткой подсказкой, как запустить. Ответы оформляй аккуратно: абзацы, списки, **жирный** для главного.")
+        if paid and source != "voice":
+            system += ("\n\nПлатный тариф: оформляй ответ красиво и по теме запроса — первой строкой заголовок с уместным эмодзи "
+                       "(## 🍳 Рецепт, ## 📚 Учёба, ## 💡 Идея и т.п.), затем структура: короткие разделы, списки, **жирный** для главного, "
+                       "в конце — краткий итог или совет. Без воды.")
         if source == "voice":
             system += "\n\nСейчас голосовой разговор: отвечай одной-двумя короткими живыми фразами, как человек в разговоре."
         history = [

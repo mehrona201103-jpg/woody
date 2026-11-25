@@ -22,7 +22,8 @@ from backend.actions.device import capabilities
 from backend.config import BASE_DIR, get_settings, provider_config_problems, setup_logging
 from backend.core.ai_router import AIRouter
 from backend.core.brain import PENDING, Brain, load_emotion, split_tone
-from backend.core.billing import PLANS, FREE_LIMIT, can_request, bump_usage, create_payment, effective_plan, remaining_requests
+from backend.core.billing import PLANS, FREE_LIMIT, PRICES, CURRENCY, RESET_HOURS, can_request, bump_usage, create_payment, effective_plan, remaining_requests, current_limit
+from backend.core import codegen
 from backend.core.admin_notify import notify_payment, decide_payment, handle_update, setup_webhook, bot_token
 from backend.database.models import PaymentRequest
 from backend.core.identity import IdentityService
@@ -94,7 +95,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.6", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.6.7", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -297,11 +298,11 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 # ------------------------------------------------------------------ health / user
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.6", "build": "2026-11-24g"}
+    return {"status": "ok", "service": "woody", "version": "0.6.7", "build": "2026-11-24g"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.6", "build": "2026-11-24g"}
+    return {"version": "0.6.7", "build": "2026-11-24g"}
 
 
 # ------------------------------------------------------------------ тарифы / оплата
@@ -311,6 +312,10 @@ def api_plans(user: User = Depends(require_user), db: Session = Depends(get_db))
     plan = effective_plan(user)
     return {
         "plans": PLANS,
+        "prices": PRICES,
+        "currency": CURRENCY,
+        "reset_hours": RESET_HOURS,
+        "period": getattr(user, "plan_period", None) or "month",
         "current": plan,
         "plan_until": user.plan_until.isoformat() if user.plan_until else None,
         "used": int(user.request_count or 0),
@@ -345,7 +350,8 @@ def api_usage(user: User = Depends(require_user), db: Session = Depends(get_db))
         "plan": effective_plan(user),
         "used": int(user.request_count or 0),
         "remaining": remaining_requests(user),
-        "limit": PLANS[effective_plan(user)]["limit"],
+        "limit": current_limit(user),
+        "period": getattr(user, "plan_period", None) or "month",
         "plan_until": user.plan_until.isoformat() if user.plan_until else None,
     }
 
@@ -499,10 +505,15 @@ async def _see(body: ChatBody, user: User, db: Session, chat: ChatSession) -> di
 
 
 async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -> dict:
-    ok, usage = can_request(user)
+    ok, usage = can_request(user, db)
     if not ok:
+        if usage.get("plan") in ("pro", "ultra"):
+            mins = usage.get("reset_in_minutes", RESET_HOURS * 60)
+            msg = f"Лимит на этот месяц закончился. Подожди — через {mins // 60} ч {mins % 60} мин счётчик обнулится, и можно писать дальше. Или возьми тариф на год — там безлимит."
+        else:
+            msg = "Твой бесплатный лимит закончился (200 000 запросов). Подключи Pro или Ultra, чтобы продолжить."
         return {
-            "reply": "Твой бесплатный лимит закончился (200 000 запросов). Подключи Pro или Ultra, чтобы продолжить.",
+            "reply": msg,
             "error": "limit_exceeded",
             "usage": usage,
             "face": "sad",
@@ -518,7 +529,10 @@ async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -
         pro_mode = body.pro_mode
         if effective_plan(user) == "ultra" and (pro_mode or "") in ("woody_code", "code_red"):
             pro_mode = "woody_code"
-        result = await brain.handle(user, body.text.strip(), source, chat.id, pro_mode=pro_mode, pro_persona=body.pro_persona)
+        paid = effective_plan(user) in ("pro", "ultra")
+        if not paid:
+            pro_mode, body.pro_persona = None, None  # режимы и характер — только на платных тарифах
+        result = await brain.handle(user, body.text.strip(), source, chat.id, pro_mode=pro_mode, pro_persona=body.pro_persona, paid=paid)
         result["chat_id"] = chat.id
         result["ids"] = dict(brain.memory.last_ids)
     bump_usage(db, user)
@@ -528,6 +542,49 @@ async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -
     db.commit()
     result["usage"] = {"plan": effective_plan(user), "used": int(user.request_count or 0), "remaining": remaining_requests(user)}
     return result
+
+
+# ------------------------------------------------------------------ Woody Code (Ultra)
+EXPORT_DIR = Path(settings.db_path).parent / "exports"
+
+
+class CodeBody(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/api/code")
+async def woody_code(body: CodeBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    if effective_plan(user) != "ultra":
+        raise HTTPException(403, {"code": "need_ultra", "message": "Woody Code доступен на тарифе Ultra."})
+    ok, usage = can_request(user, db)
+    if not ok:
+        return {"error": "limit_exceeded", "reply": "Лимит закончился. Подожди сброса или возьми тариф на год.", "usage": usage}
+    try:
+        reply, _ = await router.complete([{"role": "system", "content": codegen.CODE_SYSTEM}, {"role": "user", "content": body.text.strip()}])
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Woody Code: AI недоступен: %s", exc)
+        return {"error": "ai_unavailable", "reply": "Сейчас не могу связаться с моделью. Попробуй позже."}
+    files = codegen.parse_files(reply)
+    out: dict = {"reply": codegen.summary(reply) or "Готово.", "file": None, "files": []}
+    if files:
+        info = codegen.build(EXPORT_DIR, user.id, body.text, files)
+        out["file"] = info
+        out["files"] = info["files"]
+        out["code"] = {p: c for p, c in files} if len(files) == 1 else None
+    bump_usage(db, user)
+    return out
+
+
+@app.get("/api/code/download/{token}")
+def woody_code_download(token: str, user: User = Depends(require_user)) -> Response:
+    found = codegen.locate(EXPORT_DIR, user.id, token)
+    if not found:
+        raise HTTPException(404, {"code": "no_file", "message": "Файл не найден или устарел."})
+    path, name = found
+    from urllib.parse import quote
+    media = "application/zip" if name.endswith(".zip") else "application/octet-stream"
+    return Response(path.read_bytes(), media_type=media,
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
 @app.post("/api/chat")

@@ -11,6 +11,15 @@ from backend.database.models import PaymentRequest, User
 logger = logging.getLogger("woody.billing")
 
 FREE_LIMIT = 200_000
+PRO_MONTH_LIMIT = FREE_LIMIT * 3      # Pro на месяц: в 3 раза больше Free
+ULTRA_MONTH_LIMIT = 1_000_000         # Ultra на месяц
+RESET_HOURS = 2                       # после исчерпания лимита ждём 2 часа и счётчик обнуляется
+
+PRICES = {
+    "pro": {"month": "9.99", "year": "29.99"},
+    "ultra": {"month": "19.99", "year": "39.99"},
+}
+CURRENCY = "сомони"
 
 PLANS = {
     "free": {
@@ -28,29 +37,31 @@ PLANS = {
     },
     "pro": {
         "title": "Pro",
-        "price_month": "9.99",
-        "price_year": None,
-        "currency": "сомони",
-        "limit": None,  # без лимита
+        "price_month": PRICES["pro"]["month"],
+        "price_year": PRICES["pro"]["year"],
+        "currency": CURRENCY,
+        "limit": PRO_MONTH_LIMIT,   # на месяц; на год — без лимита
+        "limit_year": None,
         "features": [
-            "Безлимит запросов",
-            "Режимы: Учёба, Код, Агент, Инкогнито",
-            "Свой характер Woody",
-            "Приоритет ответа",
-            "Глубокий разбор фото",
+            f"{PRO_MONTH_LIMIT:,} запросов в месяц (в 3 раза больше Free)".replace(",", " "),
+            "На год — безлимит",
+            "Режимы рядом с кнопкой отправки",
+            "Оформленные ответы по теме запроса",
+            "Свой характер Woody и глубокий разбор фото",
         ],
     },
     "ultra": {
         "title": "Ultra",
-        "price_month": None,
-        "price_year": "19.99",
-        "currency": "сомони",
-        "limit": None,
+        "price_month": PRICES["ultra"]["month"],
+        "price_year": PRICES["ultra"]["year"],
+        "currency": CURRENCY,
+        "limit": ULTRA_MONTH_LIMIT,
+        "limit_year": None,
         "features": [
+            f"{ULTRA_MONTH_LIMIT:,} запросов в месяц".replace(",", " "),
+            "На год — безлимит",
             "Всё из Pro",
-            "Woody Code — красный режим кодинга",
-            "Python, JS, Java, C++, Linux/Kali",
-            "Сборка проекта в ZIP + инструкция",
+            "Woody Code: терминал, файлы и ZIP-проекты",
             "Максимум памяти и сильные модели",
         ],
     },
@@ -70,28 +81,67 @@ def effective_plan(user: User) -> str:
     return plan
 
 
-def remaining_requests(user: User) -> int | None:
+def is_yearly(user: User) -> bool:
+    return (getattr(user, "plan_period", None) or "month") == "year"
+
+
+def current_limit(user: User) -> int | None:
+    """Лимит запросов сейчас: None = безлимит (платный годовой тариф)."""
     plan = effective_plan(user)
-    limit = PLANS[plan]["limit"]
+    if plan in ("pro", "ultra") and is_yearly(user):
+        return None
+    return PLANS[plan]["limit"]
+
+
+def _maybe_reset(session: Session | None, user: User) -> None:
+    """Платный месячный тариф: через RESET_HOURS после исчерпания лимита счётчик обнуляется."""
+    hit = getattr(user, "limit_hit_at", None)
+    if hit is None or effective_plan(user) not in ("pro", "ultra"):
+        return
+    if _now() - hit >= timedelta(hours=RESET_HOURS):
+        user.request_count = 0
+        user.limit_hit_at = None
+        if session is not None:
+            session.add(user)
+            session.commit()
+
+
+def reset_at(user: User) -> datetime | None:
+    hit = getattr(user, "limit_hit_at", None)
+    return hit + timedelta(hours=RESET_HOURS) if hit else None
+
+
+def remaining_requests(user: User) -> int | None:
+    limit = current_limit(user)
     if limit is None:
         return None
-    used = int(user.request_count or 0)
-    return max(0, limit - used)
+    return max(0, limit - int(user.request_count or 0))
 
 
-def can_request(user: User) -> tuple[bool, dict]:
+def can_request(user: User, session: Session | None = None) -> tuple[bool, dict]:
     """True если можно сделать запрос. Иначе info для UI."""
+    _maybe_reset(session, user)
     plan = effective_plan(user)
     left = remaining_requests(user)
     info = {
         "plan": plan,
+        "period": (getattr(user, "plan_period", None) or "month") if plan != "free" else None,
         "used": int(user.request_count or 0),
-        "limit": PLANS[plan]["limit"],
+        "limit": current_limit(user),
         "remaining": left,
     }
     if left is None:
         return True, info
     if left <= 0:
+        if plan in ("pro", "ultra"):
+            if getattr(user, "limit_hit_at", None) is None:
+                user.limit_hit_at = _now()
+                if session is not None:
+                    session.add(user)
+                    session.commit()
+            r = reset_at(user)
+            info["reset_at"] = r.isoformat() if r else None
+            info["reset_in_minutes"] = max(0, int((r - _now()).total_seconds() // 60)) if r else RESET_HOURS * 60
         return False, info
     return True, info
 
@@ -106,8 +156,12 @@ def activate_plan(session: Session, user: User, plan: str, period: str = "month"
     plan = plan.lower()
     if plan not in ("pro", "ultra"):
         raise ValueError("bad plan")
-    days = 365 if period == "year" or plan == "ultra" else 30
+    period = "year" if period == "year" else "month"
+    days = 365 if period == "year" else 30
     user.plan = plan
+    user.plan_period = period
+    user.limit_hit_at = None
+    user.request_count = 0
     user.plan_until = _now() + timedelta(days=days)
     session.add(user)
     session.commit()
@@ -121,14 +175,10 @@ def create_payment(
     receipt_data: str = "",
 ) -> PaymentRequest:
     plan = plan.lower()
-    if plan == "pro":
-        amount = PLANS["pro"]["price_month"] or "9.99"
-        period = "month"
-    elif plan == "ultra":
-        amount = PLANS["ultra"]["price_year"] or "19.99"
-        period = "year"
-    else:
+    if plan not in PRICES:
         raise ValueError("plan")
+    period = "year" if period == "year" else "month"
+    amount = PRICES[plan][period]
     row = PaymentRequest(
         user_id=user.id,
         plan=plan,

@@ -166,7 +166,17 @@
   window.addEventListener("woody:unauth", () => { if (Api.hasSession() === false && $("app").classList.contains("active")) logout(false); });
 
   // ---------------------------------------------------------------- вход в приложение / выход
+  async function refreshPlan() {
+    try { const d = await api("/plans"); window.__plan = d.current || "free"; window.__planData = d; } catch (_) { window.__plan = window.__plan || "free"; }
+    const paid = window.__plan === "pro" || window.__plan === "ultra";
+    $("btn-modes").classList.toggle("hidden", !paid);
+    $("nav-code").classList.toggle("locked", window.__plan !== "ultra");
+    if (!paid) { $("modes-menu").classList.add("hidden"); localStorage.removeItem("woody_pro_mode"); }
+    renderModesMenu();
+  }
+
   async function loadSession() {
+    refreshPlan();
     const u = await api("/user");
     if (!u.registered) throw new Error("not_registered");
     user = { name: u.name, email: u.email || "" };
@@ -209,6 +219,7 @@
 
   async function logout(callApi) {
     voiceOn = false; Voice.stopConversation(); Voice.stopSpeaking(); stopCamera(); Chat.abort();
+    WoodyCode.close(); WoodyCode.reset(); window.__plan = "free";
     if (callApi) { try { await api("/auth/logout", { method: "POST" }); } catch (_) { /* — */ } }
     Api.clearSession(); closeSidebar(); $("settings").classList.remove("on");
     $("app").classList.remove("active"); Chat.newChat(); History.reset(); Groups.reset(); Photos.clear();
@@ -328,9 +339,8 @@
       goPay.onclick = () => openPlansModal();
       body.append(goPay);
       if (plan === "pro" || plan === "ultra") {
-        const modesBtn = h("button", { className: "btn3d wide", textContent: "Режимы Pro / Ultra" });
-        modesBtn.onclick = () => openProModesModal(plan);
-        body.append(modesBtn);
+        const per = usage.period === "year" ? "на год — безлимит" : "на месяц";
+        body.append(note(`Тариф ${plan.toUpperCase()} ${per}. Режимы — кнопка рядом с отправкой в чате.`));
       }
       body.append(note("Оплата: перевод → скрин чека → проверка админом в Telegram."));
     } catch (e) {
@@ -340,26 +350,39 @@
   }
 
   // ---- тарифы / оплата UI
-  let payPlan = "pro", payReceipt = "";
+  let payPlan = "pro", payPeriod = "month", payReceipt = "";
+  const PRICE = { pro: { month: "9.99", year: "29.99" }, ultra: { month: "19.99", year: "39.99" } };
+  function setPeriod(per) {
+    payPeriod = per;
+    document.querySelectorAll(".period-switch .per").forEach((b) => b.classList.toggle("active", b.dataset.period === per));
+    for (const k of ["pro", "ultra"]) {
+      $("price-" + k).textContent = PRICE[k][per];
+      $("unit-" + k).textContent = per === "year" ? "сомони / год" : "сомони / мес";
+    }
+    $("plans-note").textContent = per === "year" ? "На год — безлимит запросов." : "Месячные тарифы с лимитом. Закончился — через 2 часа счётчик обнулится.";
+    const d = window.__planData; if (d) fillFeats(d, per);
+  }
+  function fillFeats(data, per) {
+    for (const key of ["pro", "ultra"]) {
+      const ul = $("plan-" + key + "-feats"); ul.innerHTML = "";
+      let feats = (data.plans[key].features || []);
+      if (per === "year") feats = feats.filter((f) => !/в месяц/.test(f)); else feats = feats.filter((f) => f !== "На год — безлимит");
+      if (per === "year") feats.unshift("Безлимит запросов");
+      feats.slice(0, 6).forEach((f) => { const li = document.createElement("li"); li.textContent = f; ul.append(li); });
+    }
+  }
   async function openPlansModal() {
     const modal = $("plans-modal");
     try {
       const data = await api("/plans");
-      const fill = (id, key) => {
-        const ul = $(id); ul.innerHTML = "";
-        (data.plans[key].features || []).slice(0, 5).forEach((f) => {
-          const li = document.createElement("li"); li.textContent = f; ul.append(li);
-        });
-      };
-      fill("plan-pro-feats", "pro");
-      fill("plan-ultra-feats", "ultra");
-      window.__payInfo = data.payment || {};
-    } catch (_) {
-      $("plan-pro-feats").innerHTML = "<li>Безлимит</li><li>Режимы</li><li>Приоритет</li><li>Характер</li><li>Зрение</li>";
-      $("plan-ultra-feats").innerHTML = "<li>Всё из Pro</li><li>Woody Code</li><li>ZIP-проекты</li><li>Python/JS/C++</li><li>Макс. память</li>";
-    }
+      window.__planData = data; window.__payInfo = data.payment || {};
+      if (data.prices) Object.assign(PRICE, data.prices);
+    } catch (_) { /* оставляем значения по умолчанию */ }
+    if (!window.__planData) { $("plan-pro-feats").innerHTML = "<li>600 000 запросов в месяц</li><li>Режимы</li>"; $("plan-ultra-feats").innerHTML = "<li>1 000 000 запросов в месяц</li><li>Woody Code</li>"; }
+    setPeriod("month");
     modal.classList.remove("hidden");
   }
+  document.querySelectorAll(".period-switch .per").forEach((b) => { b.onclick = () => setPeriod(b.dataset.period); });
   $("plans-close").onclick = () => $("plans-modal").classList.add("hidden");
   document.querySelectorAll(".plan-buy").forEach((btn) => {
     btn.onclick = () => {
@@ -373,7 +396,7 @@
     payPlan = plan;
     payReceipt = "";
     $("pay-title").textContent = plan === "ultra" ? "Оплата Ultra" : "Оплата Pro";
-    $("pay-amount").textContent = plan === "ultra" ? "19.99 сомони / год" : "9.99 сомони / месяц";
+    $("pay-amount").textContent = `${PRICE[plan][payPeriod]} сомони / ${payPeriod === "year" ? "год" : "месяц"}`;
     const info = window.__payInfo || {};
     $("pay-req").textContent = [info.holder, info.requisites].filter(Boolean).join("\\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
     $("pay-preview").classList.add("hidden");
@@ -401,7 +424,7 @@
     $("pay-err").textContent = "";
     $("pay-send").disabled = true;
     try {
-      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPlan === "ultra" ? "year" : "month", receipt: payReceipt }) });
+      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPeriod, receipt: payReceipt }) });
       $("pay-modal").classList.add("hidden");
       Chat.add("woody", res.message || "Заявка отправлена. Жди одобрения админа.");
     } catch (e) {
@@ -410,35 +433,33 @@
     }
   };
 
-  function openProModesModal(plan) {
-    const list = $("pro-modes-list");
-    list.innerHTML = "";
-    const modes = [
-      ["default", "Обычный"],
-      ["study", "Учёба"],
-      ["code", "Код"],
-      ["write", "Тексты"],
-      ["deal", "Переговоры"],
-      ["agent", "Агент"],
-      ["ghost", "Инкогнито"],
-    ];
-    if (plan === "ultra") modes.push(["woody_code", "Woody Code 🔥"]);
+  // ---- режимы рядом с кнопкой отправки (Pro / Ultra)
+  const MODES = [["default", "Обычный"], ["study", "Учёба"], ["code", "Код"], ["write", "Тексты"], ["deal", "Переговоры"], ["agent", "Агент"], ["ghost", "Инкогнито"]];
+  function renderModesMenu() {
+    const menu = $("modes-menu"); menu.innerHTML = "";
     const cur = localStorage.getItem("woody_pro_mode") || "default";
-    modes.forEach(([id, label]) => {
-      const b = h("button", { type: "button", className: "btn3d mini" + (cur === id ? " primary" : ""), textContent: label });
-      b.onclick = () => {
-        localStorage.setItem("woody_pro_mode", id);
-        localStorage.setItem("woody_pro", "1");
-        document.body.classList.toggle("woody-code", id === "woody_code");
-        list.querySelectorAll("button").forEach((x) => x.classList.remove("primary"));
-        b.classList.add("primary");
-        Chat.add("woody", id === "woody_code" ? "Woody Code. Пиши задачу — соберу код жёстко и по делу." : `Режим: ${label}`);
-      };
-      list.append(b);
-    });
-    $("pro-persona-ta").value = localStorage.getItem("woody_pro_persona") || "";
-    $("pro-modes-modal").classList.remove("hidden");
+    const item = (label, active, fn, cls = "") => {
+      const b = h("button", { type: "button", className: "mode-item" + (active ? " active" : "") + (cls ? " " + cls : ""), textContent: label });
+      b.onclick = () => { menu.classList.add("hidden"); fn(); }; menu.append(b);
+    };
+    MODES.forEach(([id, label]) => item(label, cur === id, () => {
+      localStorage.setItem("woody_pro_mode", id); renderModesMenu();
+      $("btn-modes").classList.toggle("on", id !== "default");
+    }));
+    item("Свой характер…", false, () => { $("pro-persona-ta").value = localStorage.getItem("woody_pro_persona") || ""; $("pro-modes-modal").classList.remove("hidden"); }, "persona");
+    $("btn-modes").classList.toggle("on", cur !== "default");
   }
+  $("btn-modes").onclick = (e) => { e.stopPropagation(); $("modes-menu").classList.toggle("hidden"); };
+  document.addEventListener("click", (e) => { if (!e.target.closest("#modes-menu")) $("modes-menu").classList.add("hidden"); });
+
+  // ---- Woody Code
+  $("nav-code").onclick = async () => {
+    closeSidebar();
+    if (window.__plan !== "ultra") { openPlansModal(); return; }
+    if (mode === "voice") await exitVoice();
+    WoodyCode.open(() => switchMode("chat"));
+  };
+
   $("pro-modes-close").onclick = () => $("pro-modes-modal").classList.add("hidden");
   $("pro-persona-save").onclick = () => {
     localStorage.setItem("woody_pro_persona", $("pro-persona-ta").value.trim());
@@ -447,10 +468,12 @@
   };
 
   // лимит в чате
-  window.__woodyOnLimit = () => {
+  window.__woodyOnLimit = (msg, usage) => {
+    const paid = usage && (usage.plan === "pro" || usage.plan === "ultra");
     const row = document.createElement("div");
     row.className = "msg woody limit-msg";
-    row.innerHTML = '<div class="bub"><b>Бесплатный лимит закончился</b><p class="note">200 000 запросов израсходованы. Подключи Pro или Ultra.</p><button type="button" class="btn3d primary" id="limit-buy">Купить тариф</button></div>';
+    row.innerHTML = '<div class="bub"><b>' + (paid ? "Лимит на месяц закончился" : "Бесплатный лимит закончился") + '</b><p class="note"></p><button type="button" class="btn3d primary" id="limit-buy">' + (paid ? "Тариф на год — безлимит" : "Купить тариф") + '</button></div>';
+    row.querySelector(".note").textContent = msg || "";
     const log = document.querySelector("#chat-log, .chat");
     if (log) { log.append(row); row.querySelector("#limit-buy").onclick = () => openPlansModal(); }
   };
@@ -462,7 +485,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.6";
+  const LOCAL_VER = "0.6.7";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });

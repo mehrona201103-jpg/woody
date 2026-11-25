@@ -8,12 +8,12 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Woody">
-  <link rel="manifest" href="/manifest.webmanifest?v=064">
+  <link rel="manifest" href="/manifest.webmanifest?v=065">
   <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/assets/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
   <title>Woody</title>
-  <link rel="stylesheet" href="/css/style.css?v=064">
+  <link rel="stylesheet" href="/css/style.css?v=065">
 </head>
 <body>
   <div id="boot" class="boot"></div>
@@ -74,6 +74,7 @@
       <nav class="side-nav">
         <button id="nav-chat" class="nav-item active"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Новый чат</button>
         <button id="nav-voice" class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 8v8M20 11v2"/></svg>Голосовой режим</button>
+        <button id="nav-code" class="nav-item nav-code"><svg viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>Woody Code<span class="nav-tag">Ultra</span></button>
         <div class="side-sec"><span>Группы</span><button id="grp-new" class="mini-plus" aria-label="Создать группу"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
         <div id="group-list" class="side-list"></div>
         <div class="side-sec"><span>История чатов</span></div>
@@ -102,6 +103,7 @@
         <section id="chat" class="chat" aria-live="polite"></section>
       </div>
       <footer class="composer-wrap">
+        <div id="modes-menu" class="modes-menu hidden" role="menu"></div>
         <div id="attach-prev" class="attach-prev hidden"><img id="attach-img" alt="Фото для Woody"><button id="attach-x" type="button" aria-label="Убрать фото"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
         <input id="file-pick" type="file" accept="image/*" hidden>
         <input id="file-cam" type="file" accept="image/*" capture="environment" hidden>
@@ -109,6 +111,7 @@
           <button id="btn-attach" type="button" class="tool" aria-label="Загрузить фото"><svg viewBox="0 0 24 24"><path d="M21 12.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3"/></svg></button>
           <button id="btn-camera" type="button" class="tool" aria-label="Сфотографировать для Woody"><svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
           <textarea id="chat-input" rows="1" placeholder="Напиши Woody…" maxlength="2000" enterkeyhint="send"></textarea>
+          <button id="btn-modes" type="button" class="tool modes-btn hidden" aria-label="Режимы Woody"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg></button>
           <button id="btn-stop" type="button" class="round stop hidden" aria-label="Остановить"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
           <button id="btn-send" type="submit" class="round send" aria-label="Отправить" disabled><svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
         </form>
@@ -199,17 +202,21 @@
   <div id="plans-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-box plans-box">
       <h2>Платные тарифы</h2>
-      <p class="note">Free: 200 000 запросов. Дальше — Pro или Ultra.</p>
+      <div class="period-switch" role="tablist">
+        <button type="button" class="per active" data-period="month">На месяц</button>
+        <button type="button" class="per" data-period="year">На год <small>безлимит</small></button>
+      </div>
+      <p class="note" id="plans-note">Free: 200 000 запросов. Дальше — Pro или Ultra.</p>
       <div class="plan-cards">
         <div class="plan-card" data-plan="pro">
           <b>Pro</b>
-          <div class="price">9.99 <small>сомони / мес</small></div>
+          <div class="price"><span id="price-pro">9.99</span> <small id="unit-pro">сомони / мес</small></div>
           <ul id="plan-pro-feats"></ul>
           <button type="button" class="btn3d primary plan-buy" data-plan="pro">Купить Pro</button>
         </div>
         <div class="plan-card ultra" data-plan="ultra">
           <b>Ultra</b>
-          <div class="price">19.99 <small>сомони / год</small></div>
+          <div class="price"><span id="price-ultra">19.99</span> <small id="unit-ultra">сомони / мес</small></div>
           <ul id="plan-ultra-feats"></ul>
           <button type="button" class="btn3d primary plan-buy" data-plan="ultra">Купить Ultra</button>
         </div>
@@ -237,16 +244,29 @@
 
   <div id="pro-modes-modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-box">
-      <h2>Режимы Pro / Ultra</h2>
-      <div id="pro-modes-list" class="pro-modes"></div>
-      <p class="note">Свой характер (коротко):</p>
-      <textarea id="pro-persona-ta" class="edit-ta" rows="2" placeholder="Говори коротко, на ты…"></textarea>
+      <h2>Свой характер Woody</h2>
+      <textarea id="pro-persona-ta" class="edit-ta" rows="3" placeholder="Говори коротко, на ты…"></textarea>
       <div class="modal-actions">
         <button type="button" class="btn3d" id="pro-modes-close">Закрыть</button>
         <button type="button" class="btn3d primary" id="pro-persona-save">Сохранить</button>
       </div>
     </div>
   </div>
+
+  <!-- ============ WOODY CODE: отдельная страница ============ -->
+  <section id="code-page" class="code-page" aria-label="Woody Code">
+    <header class="cp-top">
+      <span class="cp-brand"><i></i>woody code <small>ultra</small></span>
+      <button id="cp-exit" type="button" class="cp-exit">Выход из Woody Code</button>
+    </header>
+    <div class="cp-hero"><div id="cp-face" class="face-slot lg"></div></div>
+    <div id="cp-term" class="cp-term" aria-live="polite"></div>
+    <form id="cp-form" class="cp-input" autocomplete="off">
+      <span class="cp-prompt">❯</span>
+      <textarea id="cp-ta" rows="1" maxlength="4000" placeholder="Опиши, какой код написать…" enterkeyhint="send"></textarea>
+      <button id="cp-run" type="submit" disabled aria-label="Запустить">↵</button>
+    </form>
+  </section>
 
 <div id="modal" class="modal hidden" role="dialog" aria-modal="true">
     <div class="modal-box"><p id="modal-text"></p><div class="modal-actions" id="modal-actions"></div></div>
@@ -298,22 +318,23 @@
     <button type="button" id="update-btn">Обновить</button>
   </div>
 
-  <script src="/js/avatars.js?v=064"></script>
-  <script src="/js/richtext.js?v=064"></script>
-  <script src="/js/api.js?v=064"></script>
-  <script src="/js/face.js?v=064"></script>
-  <script src="/js/permissions.js?v=064"></script>
-  <script src="/js/voice.js?v=064"></script>
-  <script src="/js/gestures.js?v=064"></script>
-  <script src="/js/hands.js?v=064"></script>
-  <script src="/js/device.js?v=064"></script>
-  <script src="/js/chat.js?v=064"></script>
-  <script src="/js/photos.js?v=064"></script>
-  <script src="/js/history.js?v=064"></script>
-  <script src="/js/transfer.js?v=064"></script>
-  <script src="/js/airdrop.js?v=064"></script>
-  <script src="/js/learn.js?v=064"></script>
-  <script src="/js/auth.js?v=064"></script>
-  <script src="/js/app.js?v=064"></script>
+  <script src="/js/avatars.js?v=065"></script>
+  <script src="/js/richtext.js?v=065"></script>
+  <script src="/js/api.js?v=065"></script>
+  <script src="/js/face.js?v=065"></script>
+  <script src="/js/permissions.js?v=065"></script>
+  <script src="/js/voice.js?v=065"></script>
+  <script src="/js/gestures.js?v=065"></script>
+  <script src="/js/hands.js?v=065"></script>
+  <script src="/js/device.js?v=065"></script>
+  <script src="/js/chat.js?v=065"></script>
+  <script src="/js/photos.js?v=065"></script>
+  <script src="/js/history.js?v=065"></script>
+  <script src="/js/transfer.js?v=065"></script>
+  <script src="/js/airdrop.js?v=065"></script>
+  <script src="/js/learn.js?v=065"></script>
+  <script src="/js/code.js?v=065"></script>
+  <script src="/js/auth.js?v=065"></script>
+  <script src="/js/app.js?v=065"></script>
 </body>
 </html>

@@ -124,10 +124,12 @@ const Chat = (() => {
         Face.setActivity("idle");
         if (voice) { setStatus("Говорю…"); await Voice.speak(local.reply, { tone: "calm" }); }
       } else {
-        const proOn = localStorage.getItem("woody_pro") === "1";
+        const proOn = window.__plan === "pro" || window.__plan === "ultra";
         const payload = { text, source, chat_id: chatId, image };
         if (proOn) {
-          payload.pro_mode = localStorage.getItem("woody_pro_mode") || "default";
+          let m = localStorage.getItem("woody_pro_mode") || "default";
+          if (m === "woody_code") m = "default";
+          payload.pro_mode = m;
           const persona = localStorage.getItem("woody_pro_persona") || "";
           if (persona) payload.pro_persona = persona;
         }
@@ -138,11 +140,10 @@ const Chat = (() => {
         if (data.ids && data.ids.USER) userRow.dataset.id = data.ids.USER;
         if (data.error === "limit_exceeded") {
           if (dots) dots.remove();
-          if (window.__woodyOnLimit) window.__woodyOnLimit();
+          if (window.__woodyOnLimit) window.__woodyOnLimit(data.reply, data.usage);
           result = data;
         } else {
         add("woody", data.reply, !!data.error, null, true, data.ids && data.ids.WOODY);
-        if (localStorage.getItem("woody_pro_mode") === "woody_code") document.body.classList.add("woody-code");
 
         Face.applyState({ ...data.state, activity: "idle" });
         result = data;

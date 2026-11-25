@@ -48,6 +48,8 @@ class User(Base):
     plan: Mapped[str] = mapped_column(String(20), default="free")  # free | pro | ultra
     plan_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     request_count: Mapped[int] = mapped_column(Integer, default=0)
+    plan_period: Mapped[str | None] = mapped_column(String(10), nullable=True, default="month")  # month | year
+    limit_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # когда кончился лимит (для сброса через 2 ч)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 

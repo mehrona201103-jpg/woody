@@ -44,6 +44,8 @@ def _added_columns() -> list[tuple[str, str, str]]:
         ("users", "plan", "VARCHAR(20) DEFAULT 'free'"),
         ("users", "plan_until", ts),
         ("users", "request_count", "INTEGER DEFAULT 0"),
+        ("users", "plan_period", "VARCHAR(10) DEFAULT 'month'"),
+        ("users", "limit_hit_at", ts),
     ]
 
 
