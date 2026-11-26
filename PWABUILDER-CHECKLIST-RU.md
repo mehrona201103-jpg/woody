@@ -1,7 +1,7 @@
 # Woody AI — подготовка к PWABuilder (v0.7.3)
 
 ## Что исправлено в проекте
-- Обновлён `frontend/manifest.webmanifest`: стабильный `id`, корректные PWA-поля и отдельные иконки `any` / `maskable`.
+- Обновлён `frontend/manifest.webmanifest`: стабильный `id`, режим `fullscreen` с приоритетом в `display_override`, корректные PWA-поля и отдельные иконки `any` / `maskable`.
 - Проверено наличие четырёх PNG-иконок: 192×192 и 512×512 для обычного и maskable вариантов.
 - Обновлена версия ссылки на manifest в `frontend/index.html`.
 - Обновлена версия shell-кэша Service Worker до `woody-shell-v073`.
@@ -35,3 +35,8 @@
 
 ## Ограничение
 APK/AAB и окончательный `assetlinks.json` не могут быть подготовлены окончательно без выбора package ID и сертификата подписи. Этот проект подготавливает PWA-часть, но сам по себе не создаёт подписанные Android-пакеты.
+
+
+## Полноэкранный режим Android
+В PWABuilder при создании Android-пакета в настройке **Display mode** обязательно выберите **Fullscreen** (не Standalone). Этот режим скрывает Android status bar и navigation bar на поддерживаемых устройствах, а TWA убирает панель браузера. В проекте также выставлен `display: fullscreen` и приоритет `fullscreen` в `display_override`.
+Если PWABuilder не подхватит режим из manifest, задайте его вручную в форме Package for Stores → Android.

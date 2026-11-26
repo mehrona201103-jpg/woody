@@ -180,3 +180,7 @@ Authorized JavaScript origins: адрес вашего сайта (https://…up
 - `related_applications` пока не добавлен: у проекта ещё нет опубликованного Android-приложения с подтверждённым Play Store ID. После публикации можно указать его и решить, предлагать ли пользователям нативную версию.
 
 Важно: TWA — это Android-оболочка сайта. Основная логика и API Woody AI продолжают работать на сервере Railway; это не переносит Python backend внутрь APK. Для публикации потребуется аккаунт Google Play Console и соблюдение актуальных требований Google Play.
+
+
+## Android fullscreen
+Для сборки в PWABuilder выберите Android Display mode: **Fullscreen**. В PWA manifest задан `display: fullscreen`; TWA package option также нужно выбрать вручную.
