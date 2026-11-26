@@ -78,7 +78,31 @@ class MemoryService:
     def context_lines(self, user_id: int, limit: int = 15) -> list[str]:
         if not self.is_enabled(user_id):
             return []
-        return [f"{m.key} = {m.value} ({m.category})" for m in self.list(user_id)[:limit]]
+        lines = [f"{m.key} = {m.value} ({m.category})" for m in self.list(user_id)[:limit]]
+        # Закреплённые файлы (если есть)
+        pins = [m for m in self.list(user_id) if m.category == "FACT" and m.key.startswith("pinned_file:")]
+        for p in pins[:8]:
+            lines.append(f"📌 Закреплённый файл {p.key.replace('pinned_file:', '')}: {p.value[:400]}")
+        return lines
+
+    def pin_file(self, user_id: int, name: str, summary: str) -> Memory | None:
+        """Закрепить файл/описание для постоянного контекста."""
+        key = f"pinned_file:{name[:80]}"
+        return self.remember(user_id, "FACT", key, summary[:2000])
+
+    def unpin_file(self, user_id: int, name: str) -> bool:
+        key = f"pinned_file:{name[:80]}"
+        rows = list(self.session.scalars(
+            select(Memory).where(Memory.user_id == user_id, Memory.key == key)
+        ))
+        for r in rows:
+            self.session.delete(r)
+        self.session.commit()
+        return bool(rows)
+
+    def list_pins(self, user_id: int) -> list[dict]:
+        rows = [m for m in self.list(user_id) if m.category == "FACT" and m.key.startswith("pinned_file:")]
+        return [{"name": m.key.replace("pinned_file:", ""), "summary": m.value} for m in rows]
 
     def delete(self, user_id: int, memory_id: int) -> bool:
         res = self.session.execute(delete(Memory).where(Memory.id == memory_id, Memory.user_id == user_id))

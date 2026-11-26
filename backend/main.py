@@ -969,6 +969,75 @@ def clear_memory(user: User = Depends(require_user), db: Session = Depends(get_d
     return {"cleared": True}
 
 
+class PinFileBody(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    summary: str = Field(..., min_length=1, max_length=4000)
+    content: str | None = Field(default=None, max_length=120000)
+
+
+@app.get("/api/pins")
+def list_pins(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    return MemoryService(db).list_pins(user.id)
+
+
+@app.post("/api/pins")
+async def pin_file(body: PinFileBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    """Закрепить файл: сохраняем имя + краткое описание (и при желании содержимое для анализа)."""
+    summary = body.summary.strip()
+    if body.content and len(body.content) > 50:
+        # Быстрый разбор типа файла по расширению и первым строкам
+        ext = (body.name.rsplit(".", 1)[-1] if "." in body.name else "").lower()
+        preview = body.content[:800].replace("\r", "")
+        kind = {
+            "py": "Python", "js": "JavaScript", "ts": "TypeScript", "html": "HTML",
+            "css": "CSS", "json": "JSON", "md": "Markdown", "txt": "текст",
+            "sh": "Shell", "sql": "SQL", "go": "Go", "rs": "Rust", "java": "Java",
+        }.get(ext, "файл")
+        summary = f"{kind}: {summary}\nПревью:\n{preview[:500]}"
+    mem = MemoryService(db).pin_file(user.id, body.name.strip(), summary)
+    return {"ok": True, "name": body.name.strip(), "id": getattr(mem, "id", None)}
+
+
+@app.delete("/api/pins/{name}")
+def unpin_file(name: str, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    ok = MemoryService(db).unpin_file(user.id, name)
+    if not ok:
+        raise HTTPException(404, "Закреплённый файл не найден")
+    return {"deleted": name}
+
+
+@app.post("/api/pins/analyze")
+async def analyze_pinned_or_text(
+    body: PinFileBody,
+    user: User = Depends(require_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Изучить содержимое файла: тип, структура, что делает, как запускать."""
+    text = (body.content or body.summary or "").strip()
+    if not text:
+        raise HTTPException(422, "Нет содержимого для анализа")
+    name = body.name.strip() or "file"
+    system = (
+        "Ты — Woody, анализируешь файлы пользователя. Ответь кратко и по делу на русском:\n"
+        "1) Тип файла и назначение\n"
+        "2) Ключевые части / структура\n"
+        "3) Как запускать или использовать (если применимо)\n"
+        "4) Замечания / риски / улучшения\n"
+        "Без воды, списком."
+    )
+    try:
+        reply, provider = await router.complete([
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Файл: {name}\n\n```\n{text[:30000]}\n```"},
+        ])
+    except Exception as exc:
+        raise HTTPException(502, f"AI недоступен: {exc}") from exc
+    # Авто-pin с кратким summary
+    short = (reply or "")[:600]
+    MemoryService(db).pin_file(user.id, name, short)
+    return {"ok": True, "name": name, "analysis": reply, "provider": provider}
+
+
 @app.get("/api/settings")
 def get_settings_endpoint(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
     return UserSettings(db, user.id).all()
