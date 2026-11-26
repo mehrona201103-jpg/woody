@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Woody AI — умный ИИ-компаньон",
+  "name": "Woody AI",
   "short_name": "Woody",
-  "description": "Woody AI — живой ИИ-компаньон с голосом, лицом, памятью, умным чатом и групповыми беседами.",
+  "description": "Woody AI — ИИ-компаньон с голосом, умным чатом, памятью и групповыми беседами.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
