@@ -30,37 +30,13 @@ const WoodyCode = (() => {
   function fileCard(f) {
     const label = f.kind === "zip" ? `${f.files.length} файлов → ${esc(f.name)}` : esc(f.name);
     const list = f.files.map((x) => `<div class="cp-file">● создан <span>${esc(x)}</span></div>`).join("");
-    const box = line(
-      list +
-      `<button type="button" class="cp-dl">⬇ Скачать ${label} <small>${fmt(f.size)}</small></button>` +
-      `<button type="button" class="cp-pin" style="margin-top:6px;width:100%;text-align:left;background:rgba(255,255,255,.06);color:#ddd;border:1px solid rgba(255,255,255,.12);border-radius:10px;padding:10px 12px;font:500 13px inherit;cursor:pointer">📌 Закрепить и изучить</button>`,
-      "cp-result"
-    );
+    const box = line(list + `<button type="button" class="cp-dl">⬇ Скачать ${label} <small>${fmt(f.size)}</small></button>`, "cp-result");
     const btn = box.querySelector(".cp-dl");
     btn.onclick = async () => {
       btn.disabled = true;
       try { await Api.download("/code/download/" + f.id, f.name); btn.innerHTML = "✓ Скачано " + esc(f.name); }
       catch (e) { btn.textContent = e.userMessage || "Не удалось скачать"; }
       btn.disabled = false;
-    };
-    const pinBtn = box.querySelector(".cp-pin");
-    pinBtn.onclick = async () => {
-      pinBtn.disabled = true;
-      pinBtn.textContent = "Изучаю…";
-      try {
-        const names = (f.files || [f.name]).join(", ");
-        await Api.request("/pins", {
-          method: "POST",
-          body: JSON.stringify({
-            name: f.name,
-            summary: `Проект/файл из Woody Code: ${names}. ${f.kind === "zip" ? "ZIP-архив" : "файл"}.`,
-          }),
-        });
-        pinBtn.textContent = "✓ Закреплено — Woody будет учитывать в ответах";
-      } catch (e) {
-        pinBtn.textContent = (e && e.userMessage) || "Не удалось закрепить";
-        pinBtn.disabled = false;
-      }
     };
   }
 

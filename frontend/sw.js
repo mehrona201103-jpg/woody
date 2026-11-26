@@ -1,5 +1,5 @@
 /* Woody SW — жёсткий сброс кэша при каждой новой версии */
-const CACHE = "woody-shell-v066";
+const CACHE = "woody-shell-v071";
 self.addEventListener("install", (e) => {
   self.skipWaiting();
 });

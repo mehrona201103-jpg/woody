@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.billing import activate_plan
-from backend.core.admin_panel import is_moderator
 from backend.database.models import Feedback, PaymentRequest, User
 
 logger = logging.getLogger("woody.admin")
@@ -81,17 +80,15 @@ async def notify_payment(session: Session, req: PaymentRequest, user: User) -> b
         logger.warning("Бот: нет TELEGRAM_ADMIN_CHAT_ID — укажи id чата админа")
         return False
 
-    admin_web = (os.getenv("ADMIN_WEBAPP_URL") or os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
-    web_hint = f"\n🌐 WEB-админка: {admin_web}/admin" if admin_web else "\n🌐 Одобряй в WEB-админке (/admin)"
     if req.plan == "donate":
         text = (
             f"🎁 Пожертвование #{req.id}\n"
             f"👤 {user.name} (id={user.id})\n"
             f"📧 {user.email or '—'}\n"
             f"💰 {req.amount} сомони\n"
-            f"💬 {(req.admin_note or '').strip() or '—'}\n"
-            f"{web_hint}\n"
-            f"Резерв: /approve_{req.id} · /reject_{req.id}"
+            f"💬 {(req.admin_note or '').strip() or '—'}\n\n"
+            f"✅ Получено: /approve_{req.id}\n"
+            f"❌ Не пришло: /reject_{req.id}"
         )
         photo = _decode_data_url(req.receipt_data or "")
         if photo:
@@ -106,9 +103,9 @@ async def notify_payment(session: Session, req: PaymentRequest, user: User) -> b
         f"📧 {user.email or '—'}\n"
         f"📦 Тариф: {req.plan.upper()} / {req.period}\n"
         f"💰 {req.amount} сомони\n"
-        f"⏳ status: {req.status}\n"
-        f"{web_hint}\n"
-        f"Резерв: /approve_{req.id} · /reject_{req.id}"
+        f"⏳ status: {req.status}\n\n"
+        f"✅ Одобрить: /approve_{req.id}\n"
+        f"❌ Отклонить: /reject_{req.id}"
     )
     photo = _decode_data_url(req.receipt_data or "")
     if photo:
@@ -133,19 +130,14 @@ def decide_payment(session: Session, req_id: int, approve: bool, note: str = "")
     row.admin_note = note or ""
     row.decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
     session.add(row)
-    try:
-        if approve and row.plan == "donate":
-            session.commit()
-            return f"💚 Пожертвование #{req_id} получено ({row.amount} сомони от {user.name}). Спасибо ему!"
-        if approve:
-            activate_plan(session, user, row.plan, row.period)  # commits inside
-            return f"✅ Заявка #{req_id} одобрена → {user.name} получил {row.plan.upper()}"
+    if approve and row.plan == "donate":
         session.commit()
-        return f"❌ Заявка #{req_id} отклонена ({user.name})"
-    except Exception as exc:
-        session.rollback()
-        logger.exception("decide_payment failed: %s", exc)
-        return f"❌ Ошибка при обработке заявки #{req_id}: {exc}"
+        return f"💚 Пожертвование #{req_id} получено ({row.amount} сомони от {user.name}). Спасибо ему!"
+    if approve:
+        activate_plan(session, user, row.plan, row.period)
+        return f"✅ Заявка #{req_id} одобрена → {user.name} получил {row.plan.upper()}"
+    session.commit()
+    return f"❌ Заявка #{req_id} отклонена ({user.name})"
 
 
 HELP = (
@@ -155,12 +147,10 @@ HELP = (
     "/users — последние пользователи\n"
     "/pending — заявки на оплату и пожертвования\n"
     "/wishes — последние пожелания пользователей\n"
-    "/approve_ID — одобрить заявку (резерв)\n"
-    "/reject_ID — отклонить (резерв)\n"
+    "/approve_ID — одобрить заявку\n"
+    "/reject_ID — отклонить\n"
     "/me — узнать свой chat id\n\n"
-    "Основное: уведомления о заявках приходят сюда.\n"
-    "Одобрять и отклонять — в WEB-админке (второй домен /admin).\n"
-    "Команды /approve и /reject оставлены как резерв."
+    "Когда пользователь шлёт чек в приложении — сюда приходит фото и кнопки-команды."
 )
 
 
@@ -264,7 +254,6 @@ async def handle_update(db: Session, data: dict, providers_count: int = 0) -> No
         return
 
     # любое другое сообщение админу
-    adm = admin_chat_id()
     if adm and chat_id == adm:
         await tg_send("sendMessage", chat_id=chat_id, text="Не понял. /help")
 

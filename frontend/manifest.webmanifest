@@ -1,16 +1,30 @@
 {
-  "name": "Woody",
+  "id": "/",
+  "name": "Woody AI — умный ИИ-компаньон",
   "short_name": "Woody",
-  "description": "Woody — живой ИИ-компаньон с голосом, лицом и памятью",
+  "description": "Woody AI — живой ИИ-компаньон с голосом, лицом, памятью, умным чатом и групповыми беседами.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "orientation": "portrait",
-  "background_color": "#212121",
-  "theme_color": "#212121",
+  "background_color": "#030a22",
+  "theme_color": "#030a22",
   "lang": "ru",
+  "categories": ["productivity", "utilities", "social"],
+  "prefer_related_applications": false,
   "icons": [
-    {"src": "/assets/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
-    {"src": "/assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+    {
+      "src": "/assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }
