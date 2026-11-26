@@ -25,6 +25,7 @@ from backend.core.brain import PENDING, Brain, load_emotion, split_tone
 from backend.core.billing import PLANS, FREE_LIMIT, PRICES, CURRENCY, RESET_HOURS, can_request, bump_usage, create_payment, effective_plan, remaining_requests, current_limit
 from backend.core import codegen, agent as code_agent
 from backend.core.admin_notify import notify_feedback, notify_payment, decide_payment, handle_update, setup_webhook, bot_token
+from backend.core import admin_panel
 from backend.database.models import Feedback, PaymentRequest
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
@@ -95,7 +96,7 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="Woody", version="0.6.9", lifespan=lifespan)
+app = FastAPI(title="Woody", version="0.7.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -296,13 +297,75 @@ def rename_user(body: RenameBody, user: User = Depends(require_user), db: Sessio
 
 
 # ------------------------------------------------------------------ health / user
+
+@app.get("/admin")
+@app.get("/admin/")
+def admin_page() -> FileResponse:
+    return FileResponse(Path(BASE_DIR) / "frontend" / "admin.html")
+
+
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.6.9", "build": "2026-11-26a"}
+    return {"status": "ok", "service": "woody", "version": "0.7.0", "build": "2026-11-26b"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.6.9", "build": "2026-11-26a"}
+    return {"version": "0.7.0", "build": "2026-11-26b"}
+
+
+# ------------------------------------------------------------------ веб-админка
+def _admin_auth(request: Request) -> None:
+    import os, hmac
+    key = (request.headers.get("x-admin-key") or "").strip()
+    expected = (os.getenv("ADMIN_PANEL_KEY") or settings.access_token or "").strip()
+    if not expected or not key or not hmac.compare_digest(key, expected):
+        raise HTTPException(401, {"code": "admin_auth", "message": "Неверный ключ админки"})
+
+
+@app.get("/api/admin/panel/stats")
+def admin_panel_stats(request: Request, db: Session = Depends(get_db)) -> dict:
+    _admin_auth(request)
+    return admin_panel.stats(db, providers_n=len(router.status()))
+
+
+@app.get("/api/admin/panel/users")
+def admin_panel_users(request: Request, db: Session = Depends(get_db)) -> list:
+    _admin_auth(request)
+    return admin_panel.list_users(db)
+
+
+@app.get("/api/admin/panel/payments")
+def admin_panel_payments(request: Request, plan: str | None = None, db: Session = Depends(get_db)) -> list:
+    _admin_auth(request)
+    return admin_panel.list_payments(db, plan=plan)
+
+
+@app.get("/api/admin/panel/feedback")
+def admin_panel_feedback(request: Request, db: Session = Depends(get_db)) -> list:
+    _admin_auth(request)
+    return admin_panel.list_feedback(db)
+
+
+@app.get("/api/admin/panel/settings")
+def admin_panel_get_settings(request: Request) -> dict:
+    _admin_auth(request)
+    return admin_panel.load_settings()
+
+
+@app.post("/api/admin/panel/settings")
+async def admin_panel_set_settings(request: Request) -> dict:
+    _admin_auth(request)
+    body = await request.json()
+    return admin_panel.save_settings(body)
+
+
+@app.post("/api/admin/panel/decide")
+async def admin_panel_decide(request: Request, db: Session = Depends(get_db)) -> dict:
+    _admin_auth(request)
+    body = await request.json()
+    msg = decide_payment(db, int(body.get("id") or 0), bool(body.get("approve")), str(body.get("note") or ""))
+    return {"message": msg}
+
 
 
 # ------------------------------------------------------------------ тарифы / оплата
@@ -322,8 +385,8 @@ def api_plans(user: User = Depends(require_user), db: Session = Depends(get_db))
         "remaining": remaining_requests(user),
         "free_limit": FREE_LIMIT,
         "payment": {
-            "requisites": (os.getenv("PAYMENT_REQUISITES") or "Перевод на карту: укажите PAYMENT_REQUISITES в Variables сервера").strip(),
-            "holder": (os.getenv("PAYMENT_HOLDER") or "").strip(),
+            "requisites": (admin_panel.load_settings().get("payment_requisites") or os.getenv("PAYMENT_REQUISITES") or "Укажите реквизиты в админке или PAYMENT_REQUISITES").strip(),
+            "holder": (admin_panel.load_settings().get("payment_holder") or os.getenv("PAYMENT_HOLDER") or "").strip(),
             "note": "После оплаты загрузите скрин чека. Админ проверит и активирует тариф.",
         },
     }
@@ -747,8 +810,18 @@ def _msg_payload(m: GroupMessage) -> dict:
 
 @app.get("/api/groups")
 def list_groups(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
-    rows = db.scalars(select(Group).join(GroupMember, GroupMember.group_id == Group.id).where(GroupMember.user_id == user.id).order_by(Group.id.desc()))
-    return [{"id": g.id, "name": g.name} for g in rows]
+    rows = db.scalars(select(Group).join(GroupMember, GroupMember.group_id == Group.id).where(GroupMember.user_id == user.id).order_by(Group.id.desc())).all()
+    out = []
+    for g in rows:
+        last = db.scalars(select(GroupMessage).where(GroupMessage.group_id == g.id).order_by(GroupMessage.id.desc()).limit(1)).first()
+        out.append({
+            "id": g.id,
+            "name": g.name,
+            "last_text": (last.text[:80] if last else ""),
+            "last_at": last.created_at.isoformat() if last and last.created_at else None,
+            "members": db.scalar(select(func.count()).select_from(GroupMember).where(GroupMember.group_id == g.id)) or 0,
+        })
+    return out
 
 
 @app.post("/api/groups")

@@ -334,6 +334,21 @@
       }
 
       // --- Низ: тарифы и pro-режимы
+      body.append(section("Передача Woody"));
+      const nfcBtn = h("button", { className: "btn3d wide", textContent: "NFC: передать на другой телефон" });
+      nfcBtn.onclick = async () => {
+        try {
+          Chat.add("woody", "Поднеси второй телефон… Пишу NFC-метку.");
+          const url = await Transfer.nfcShare();
+          Chat.add("woody", "Готово. На втором телефоне открой ссылку из NFC или сканируй: " + url);
+        } catch (e) {
+          Chat.add("woody", e.message || "NFC недоступен. Используй QR/ссылку передачи.");
+          try { await Transfer.open(); } catch (_) {}
+        }
+      };
+      body.append(nfcBtn);
+      body.append(note("Оба телефона с NFC (Android Chrome). Либо обычная ссылка/QR."));
+
       body.append(section("Подписка"));
       const goPay = h("button", { className: "btn3d wide primary", textContent: "Перейти на платный тариф" });
       goPay.onclick = () => openPlansModal();
@@ -599,7 +614,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.6.9";
+  const LOCAL_VER = "0.7.0";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/health", { cache: "no-store" });

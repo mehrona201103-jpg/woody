@@ -487,3 +487,9 @@ body.woody-code .code-page .wface .wbrow,body.woody-code .code-page .wface .wmou
 
 .st{display:inline-block;width:1.2em;color:#ff8a8a}
 .st-ok{color:#34d399}.st-warn{color:#fbbf24}.st-err{color:#ff5c5c}.st-plan{color:#ff5c5c}
+
+.grp-meta{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;flex:1}
+.grp-meta b{font-size:14px;font-weight:600}
+.grp-meta small{font-size:12px;color:#8b93a7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.grp-side{font-size:11px;color:#6b7280}
+.side-row.grp{align-items:center}

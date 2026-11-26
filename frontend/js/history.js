@@ -44,10 +44,17 @@ const Groups = (() => {
   // ---------- список групп в боковой панели
   function renderList() {
     const box = $("group-list"); box.innerHTML = "";
-    if (!list.length) { box.innerHTML = '<p class="side-empty">Создай группу — Woody будет в ней сразу.</p>'; return; }
+    if (!list.length) { box.innerHTML = '<p class="side-empty">Создай группу — как в WhatsApp. Woody будет внутри сразу.</p>'; return; }
     for (const g of list) {
       const b = document.createElement("button"); b.type = "button"; b.className = "side-row side-item grp" + (cur && cur.id === g.id ? " active" : "");
-      b.innerHTML = '<span class="mini-av sm">' + Avatars.woody() + "</span>"; const t = document.createElement("span"); t.textContent = g.name; b.append(t);
+      const av = document.createElement("span"); av.className = "mini-av sm"; av.innerHTML = Avatars.woody();
+      const col = document.createElement("span"); col.className = "grp-meta";
+      const title = document.createElement("b"); title.textContent = g.name;
+      const prev = document.createElement("small"); prev.textContent = g.last_text || "Нет сообщений";
+      col.append(title, prev);
+      const meta = document.createElement("span"); meta.className = "grp-side";
+      if (g.members) { const c = document.createElement("em"); c.textContent = g.members + " уч."; meta.append(c); }
+      b.append(av, col, meta);
       b.onclick = () => open(g.id); box.append(b);
     }
   }

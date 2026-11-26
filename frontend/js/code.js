@@ -11,9 +11,9 @@ const WoodyCode = (() => {
     term.appendChild(d); term.scrollTop = term.scrollHeight; return d;
   }
   function welcome() {
-    line('<b class="red">Woody Code</b> — агент-программист. Опиши задачу.', "dim");
-    line("Планирую → пишу всеми ИИ сразу → сравниваю → проверяю → исправляю → отдаю ZIP с start.bat / start.sh.", "dim");
-    line("Следующие сообщения дорабатывают текущий проект. «/new» — начать с нуля.", "dim");
+    line('<b class="red">Woody Code</b> — агент-программист и собеседник.', "dim");
+    line("«Создай …» → план, код, ZIP. Вопросы («как запустить?») → ответ без нового проекта.", "dim");
+    line("Доработки текущего проекта — просто пиши. «/new» — с нуля.", "dim");
   }
   function open(exitCb) {
     onExit = exitCb; document.body.classList.add("woody-code");
@@ -76,7 +76,8 @@ const WoodyCode = (() => {
       if (!result) { line("Слишком долго. Попробуй упростить задачу.", "cp-err"); return; }
       if (result.reply) line(Rich.render(result.reply), "cp-out rich");
       if (result.file) { fileCard(result.file); Face.setEmotion("happy"); }
-      if (result.edited) line("Проект дорабатывается по твоим просьбам. Новая задача — «/new».", "dim");
+      else if (result.chat) Face.setEmotion("happy");
+      if (result.edited && !result.chat) line("Проект дорабатывается. Новая задача — «/new».", "dim");
     } catch (e) {
       if (spin) spin.remove();
       if (e.code !== "auth") line((e.code === "need_ultra" ? "Woody Code доступен на тарифе Ultra." : e.userMessage || "Не удалось подключиться к Woody."), "cp-err");

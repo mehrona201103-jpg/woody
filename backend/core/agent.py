@@ -147,6 +147,53 @@ class Job:
         self.steps.append({"kind": kind, "text": text})
 
 
+# Вопросы / болтовня — отвечаем текстом, НЕ генерируем новый проект
+_CHAT_RE = re.compile(
+    r"(?i)^\s*("
+    r"как\s+(запустить|поставить|установить|скачать|открыть|пользоваться|работать)|"
+    r"что\s+(это|здесь|внутри|дальше|делать)|"
+    r"почему|зачем|объясни|поясни|расскажи|подскажи|"
+    r"где\s+(файл|папка|лежит)|"
+    r"можно\s+ли|а\s+если|ок|спасибо|понял|ясно|норм|"
+    r"привет|хай|здарова|hello|hi|"
+    r"какой\s+(язык|фреймворк|стек)|"
+    r"покажи\s+(структуру|файлы|readme)|"
+    r"help|/help"
+    r")\b"
+)
+_GEN_RE = re.compile(
+    r"(?i)(создай|напиши|сделай|сгенерируй|добавь|исправь|почини|перепиши|"
+    r"доработай|refactor|implement|build|create|write|fix|add\s+file|"
+    r"новый\s+проект|сделай\s+приложение|сделай\s+сайт|сделай\s+бота)"
+)
+
+def _is_chat(request: str, has_project: bool) -> bool:
+    r = (request or "").strip()
+    if not r:
+        return True
+    if r.startswith("/new"):
+        return False
+    if _GEN_RE.search(r):
+        return False
+    if has_project and _CHAT_RE.search(r):
+        return True
+    if has_project and len(r) < 120 and not any(x in r for x in ("```", "{", "def ", "function ", "class ", "import ")):
+        # короткое уточнение без явного «сделай» — скорее вопрос
+        if any(w in r.lower() for w in ("как", "что", "где", "почему", "зачем", "можно", "нужно ли", "?")):
+            return True
+    return False
+
+
+CHAT_SYSTEM = (
+    "Ты — Woody Code, злой но полезный senior-инженер в красном терминале. "
+    "Отвечай по-русски коротко и по делу. У пользователя УЖЕ есть проект в контексте — "
+    "НЕ создавай новые файлы и НЕ предлагай «сейчас сгенерирую», если тебя не просят явно "
+    "написать/добавить/исправить код. Если спрашивают как запустить — дай точные команды "
+    "из README/start.sh/start.bat. Если просят объяснить файл — объясни. "
+    "Стиль: жёсткий, без воды, можно с лёгкой злостью."
+)
+
+
 async def run_agent(router, job: Job, request: str, workspace: dict, export_dir: Path, new_project: bool,
                     count_cb: Callable[[], None] | None = None) -> None:
     try:
@@ -156,6 +203,30 @@ async def run_agent(router, job: Job, request: str, workspace: dict, export_dir:
             raise RuntimeError("Нет настроенных ИИ-провайдеров.")
         edit = bool(existing)
         ctx = f"\n\nТЕКУЩИЙ ПРОЕКТ (дорабатывай его):\n{_ctx(existing)}" if edit else ""
+
+        # --- режим разговора: не генерируем ZIP, просто отвечаем ---
+        if not new_project and _is_chat(request, bool(existing)):
+            job.step("Думаю над ответом…", "step")
+            msgs = [
+                {"role": "system", "content": CHAT_SYSTEM},
+                {"role": "user", "content": (request + ctx)[:MAX_CTX]},
+            ]
+            try:
+                reply, who = await router.complete(msgs, max_tokens=1200, temperature=0.4, timeout=60)
+            except Exception as exc:  # noqa: BLE001
+                reply, who = f"Сейчас не могу ответить: {exc}", "?"
+            job.step("Готово", "ok")
+            job.result = {
+                "reply": (reply or "").strip() or "Нечего сказать.",
+                "chat": True,
+                "provider": who,
+                "project": workspace.get("project") or "project",
+                "files": [],
+            }
+            if count_cb:
+                count_cb()
+            job.done = True
+            return
 
         # 1) план
         job.step("Составляю план проекта…")

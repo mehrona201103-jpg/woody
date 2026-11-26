@@ -59,5 +59,32 @@ const Transfer = (() => {
     } catch (e) { ui.error(e.userMessage || "Не удалось подключиться к Woody."); return false; }
   }
 
-  return { show, close, join };
+    async function nfcShare() {
+    if (!("NDEFReader" in window)) {
+      throw new Error("NFC не поддерживается на этом устройстве (нужен Chrome Android).");
+    }
+    const data = await Api.request("/transfer/create", { method: "POST" });
+    const url = data.url || (location.origin + "/?woody=" + data.token);
+    const ndef = new NDEFReader();
+    await ndef.write({ records: [{ recordType: "url", data: url }] });
+    return url;
+  }
+  async function nfcReceive(onToken) {
+    if (!("NDEFReader" in window)) throw new Error("NFC не поддерживается");
+    const ndef = new NDEFReader();
+    await ndef.scan();
+    ndef.onreading = (ev) => {
+      for (const r of ev.message.records) {
+        if (r.recordType === "url" || r.recordType === "text") {
+          const dec = new TextDecoder();
+          const s = dec.decode(r.data);
+          const m = s.match(/[?&]woody=([A-Za-z0-9_\-]+)/) || s.match(/token=([A-Za-z0-9_\-]+)/);
+          if (m) onToken(m[1]);
+        }
+      }
+    };
+  }
+  return {
+    nfcShare, nfcReceive,
+ show, close, join };
 })();

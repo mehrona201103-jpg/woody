@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Woody Admin</title>
+<style>
+:root{--bg:#0b0d12;--card:#151922;--line:#2a3140;--txt:#e8ecf4;--mut:#8b93a7;--acc:#3de0ff;--ok:#34d399;--bad:#f87171;--warn:#fbbf24}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--txt);padding:16px}
+h1{font-size:20px;margin:0 0 12px}h2{font-size:15px;margin:18px 0 8px;color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.stat{flex:1;min-width:100px;background:#0f131a;border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:22px}.stat span{font-size:12px;color:var(--mut)}
+button,.btn{background:var(--acc);color:#04122e;border:0;border-radius:10px;padding:8px 12px;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--txt);border:1px solid var(--line)}
+button.ok{background:var(--ok);color:#042}button.bad{background:var(--bad);color:#fff}
+input,textarea{width:100%;background:#0f131a;border:1px solid var(--line);border-radius:10px;padding:10px;color:var(--txt);margin:4px 0 8px}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:8px 6px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--mut);font-weight:500}.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;background:#1e2430}
+.tag.pro{background:#1e3a5f;color:#93c5fd}.tag.ultra{background:#3b1220;color:#fda4af}.tag.free{background:#1a1f2a;color:#9ca3af}
+.tag.pending{background:#3b2f0a;color:var(--warn)}.tag.approved{background:#0f2e1a;color:var(--ok)}.tag.rejected{background:#3b1212;color:var(--bad)}
+#login{max-width:360px;margin:40px auto}.hidden{display:none}#msg{color:var(--bad);min-height:18px;font-size:13px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}.tabs button{background:#1a2030;color:var(--txt)}
+.tabs button.on{background:var(--acc);color:#04122e}
+</style>
+</head>
+<body>
+<div id="login" class="card">
+  <h1>Woody Admin</h1>
+  <p style="color:var(--mut);font-size:13px">Введи WOODY_ACCESS_TOKEN или ADMIN_PANEL_KEY</p>
+  <input id="key" type="password" placeholder="Секретный ключ"/>
+  <button id="go">Войти</button>
+  <p id="msg"></p>
+</div>
+<div id="app" class="hidden">
+  <div class="row" style="justify-content:space-between;margin-bottom:12px">
+    <h1>Woody Admin</h1>
+    <button class="ghost" id="out">Выйти</button>
+  </div>
+  <div class="tabs" id="tabs">
+    <button data-t="stats" class="on">Статистика</button>
+    <button data-t="users">Пользователи</button>
+    <button data-t="pay">Заявки</button>
+    <button data-t="don">Пожертвования</button>
+    <button data-t="fb">Идеи</button>
+    <button data-t="set">Реквизиты</button>
+  </div>
+  <div id="view"></div>
+</div>
+<script>
+const K='woody_admin_key';
+const key=()=>localStorage.getItem(K)||'';
+const api=async(path,opts={})=>{
+  const h={'Content-Type':'application/json','X-Admin-Key':key()};
+  const r=await fetch('/api/admin/panel'+path,{...opts,headers:{...h,...(opts.headers||{})}});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.detail?.message||j.detail||r.statusText);
+  return j;
+};
+const $=id=>document.getElementById(id);
+const tag=(s,c)=>`<span class="tag ${c||s}">${s}</span>`;
+$('go').onclick=async()=>{
+  localStorage.setItem(K,$('key').value.trim());
+  try{await api('/stats');$('login').classList.add('hidden');$('app').classList.remove('hidden');show('stats');}
+  catch(e){$('msg').textContent=e.message||'Неверный ключ';}
+};
+$('out').onclick=()=>{localStorage.removeItem(K);location.reload();};
+if(key()){api('/stats').then(()=>{$('login').classList.add('hidden');$('app').classList.remove('hidden');show('stats');}).catch(()=>{});}
+document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');show(b.dataset.t);
+});
+async function show(t){
+  const v=$('view');v.innerHTML='Загрузка…';
+  try{
+    if(t==='stats'){const s=await api('/stats');v.innerHTML=`<div class="card row">
+      <div class="stat"><b>${s.users}</b><span>Users</span></div>
+      <div class="stat"><b>${s.free}</b><span>Free</span></div>
+      <div class="stat"><b>${s.pro}</b><span>Pro</span></div>
+      <div class="stat"><b>${s.ultra}</b><span>Ultra</span></div>
+      <div class="stat"><b>${s.pending_payments}</b><span>Pending</span></div>
+      <div class="stat"><b>${s.donations}</b><span>Donations</span></div>
+      <div class="stat"><b>${s.feedback}</b><span>Ideas</span></div>
+      <div class="stat"><b>${s.total_requests}</b><span>Requests</span></div>
+    </div>`;}
+    if(t==='users'){const u=await api('/users');v.innerHTML=`<div class="card"><table><tr><th>ID</th><th>Имя</th><th>План</th><th>Запросы</th><th>Email</th></tr>
+      ${u.map(x=>`<tr><td>${x.id}</td><td>${x.name||''}</td><td>${tag(x.plan)}</td><td>${x.request_count}</td><td>${x.email||'—'}</td></tr>`).join('')}</table></div>`;}
+    if(t==='pay'){const p=await api('/payments');v.innerHTML=`<div class="card"><table><tr><th>#</th><th>User</th><th>Plan</th><th>Sum</th><th>Status</th><th></th></tr>
+      ${p.map(x=>`<tr><td>${x.id}</td><td>${x.user_name}</td><td>${x.plan}/${x.period}</td><td>${x.amount}</td><td>${tag(x.status)}</td>
+      <td>${x.status==='pending'?`<button class="ok" data-a="${x.id}">✓</button> <button class="bad" data-r="${x.id}">✗</button>`:''}</td></tr>`).join('')}</table></div>`;
+      v.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{await api('/decide',{method:'POST',body:JSON.stringify({id:+b.dataset.a,approve:true})});show('pay');});
+      v.querySelectorAll('[data-r]').forEach(b=>b.onclick=async()=>{await api('/decide',{method:'POST',body:JSON.stringify({id:+b.dataset.r,approve:false})});show('pay');});}
+    if(t==='don'){const p=await api('/payments?plan=donate');v.innerHTML=`<div class="card"><table><tr><th>#</th><th>User</th><th>Sum</th><th>Status</th></tr>
+      ${p.map(x=>`<tr><td>${x.id}</td><td>${x.user_name}</td><td>${x.amount}</td><td>${tag(x.status)}</td></tr>`).join('')||'<tr><td colspan=4>Пусто</td></tr>'}</table></div>`;}
+    if(t==='fb'){const f=await api('/feedback');v.innerHTML=`<div class="card">${f.map(x=>`<div style="padding:10px 0;border-bottom:1px solid var(--line)"><b>${x.user_name}</b> <span style="color:var(--mut);font-size:12px">${x.created_at||''}</span><p style="margin:6px 0 0">${(x.text||'').replace(/</g,'&lt;')}</p></div>`).join('')||'Пока нет идей'}</div>`;}
+    if(t==='set'){const s=await api('/settings');v.innerHTML=`<div class="card">
+      <label>Получатель</label><input id="holder" value="${(s.payment_holder||'').replace(/"/g,'&quot;')}"/>
+      <label>Реквизиты</label><textarea id="req" rows="3">${(s.payment_requisites||'').replace(/</g,'&lt;')}</textarea>
+      <label>Модераторы Telegram (chat id через запятую)</label><input id="mods" value="${(s.moderators||[]).join(',')}"/>
+      <button id="save">Сохранить</button><span id="sm" style="margin-left:8px;color:var(--ok)"></span></div>`;
+      $('save').onclick=async()=>{await api('/settings',{method:'POST',body:JSON.stringify({payment_holder:$('holder').value,payment_requisites:$('req').value,moderators:$('mods').value.split(',').map(x=>x.trim()).filter(Boolean)})});$('sm').textContent='Сохранено';};}
+  }catch(e){v.innerHTML='<div class="card" style="color:var(--bad)">'+e.message+'</div>';}
+}
+</script>
+</body>
+</html>

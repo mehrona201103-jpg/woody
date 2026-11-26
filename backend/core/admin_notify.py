@@ -188,10 +188,9 @@ async def handle_update(db: Session, data: dict, providers_count: int = 0) -> No
         await tg_send("sendMessage", chat_id=chat_id, text=f"Твой chat id: `{chat_id}`", parse_mode="Markdown")
         return
 
-    # дальше только админ-чат (если задан)
-    adm = admin_chat_id()
-    if adm and chat_id != adm:
-        await tg_send("sendMessage", chat_id=chat_id, text="⛔ Только для админа Woody.")
+    # дальше только админ или модератор
+    if not is_moderator(chat_id):
+        await tg_send("sendMessage", chat_id=chat_id, text="⛔ Только для админа / модератора Woody.")
         return
 
     if text.startswith("/approve_"):
