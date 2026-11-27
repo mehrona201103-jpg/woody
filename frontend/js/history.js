@@ -27,17 +27,32 @@ const Groups = (() => {
   const log = $("grp-log"), scroller = $("grp-scroll");
 
   // ---------- маленькое окно с полем ввода
-  function ask({ title, placeholder, ok, maxlength = 60, submit }) {
+  function ask({ title, placeholder, ok, maxlength = 60, submit, suggest = false }) {
     return new Promise((resolve) => {
       const m = $("ask"), inp = $("ask-input"), err = $("ask-error"), okb = $("ask-ok");
       $("ask-title").textContent = title; inp.placeholder = placeholder || ""; inp.maxLength = maxlength; inp.value = ""; err.textContent = ""; okb.textContent = ok || "OK";
       m.classList.remove("hidden"); setTimeout(() => inp.focus(), 60);
-      const close = (v) => { m.classList.add("hidden"); okb.onclick = $("ask-cancel").onclick = inp.onkeydown = null; resolve(v); };
+      let suggestionBox = m.querySelector(".user-suggestions");
+      if (suggestionBox) suggestionBox.remove();
+      if (suggest) { suggestionBox = document.createElement("div"); suggestionBox.className = "user-suggestions"; inp.insertAdjacentElement("afterend", suggestionBox); }
+      const close = (v) => { m.classList.add("hidden"); okb.onclick = $("ask-cancel").onclick = inp.onkeydown = inp.oninput = null; if (suggestionBox) suggestionBox.remove(); resolve(v); };
       const go = async () => {
         const v = inp.value.trim(); if (!v) return; okb.disabled = true; err.textContent = "";
         try { await submit(v); close(v); } catch (e) { err.textContent = e.userMessage || e.message || "Не получилось."; } finally { okb.disabled = false; }
       };
       okb.onclick = go; $("ask-cancel").onclick = () => close(null); inp.onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } };
+      if (suggest) {
+        let seq = 0;
+        inp.oninput = async () => {
+          const q = inp.value.trim(), current = ++seq; suggestionBox.innerHTML = "";
+          if (!q) return;
+          try {
+            const users = await api("/users/suggest?q=" + encodeURIComponent(q));
+            if (current !== seq) return;
+            users.forEach((u) => { const b = document.createElement("button"); b.type = "button"; b.className = "suggest-user"; b.textContent = u.name; b.onclick = () => { inp.value = u.name; suggestionBox.innerHTML = ""; }; suggestionBox.append(b); });
+          } catch (_) { /* suggestions optional */ }
+        };
+      }
     });
   }
 
@@ -81,6 +96,16 @@ const Groups = (() => {
     bub.append(body); row.append(bub); log.append(row);
   }
   const bottom = (smooth = true) => requestAnimationFrame(() => scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth ? "smooth" : "auto" }));
+  function notifyGroup(message) {
+    const oldTitle = document.title;
+    document.title = "● Новое сообщение · " + oldTitle.replace(/^● Новое сообщение · /, "");
+    if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+      const who = senderOf(message.user_id);
+      const n = new Notification(cur ? cur.name : "Сообщение в группе", { body: `${who.name}: ${message.text.slice(0, 120)}`, icon: "/assets/icon-192.png", tag: `woody-group-${cur ? cur.id : 0}` });
+      n.onclick = () => { window.focus(); n.close(); };
+    }
+    if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
+  }
 
   function renderHeader(info) {
     members = {}; for (const u of info.members) members[u.id] = u;
@@ -95,6 +120,7 @@ const Groups = (() => {
   }
 
   async function open(id) {
+    if (window.enableWoodyPush) window.enableWoodyPush();
     clearInterval(timer); seen = new Set(); lastId = 0; log.innerHTML = "";
     try {
       const info = await api(`/groups/${id}`); cur = { id, name: info.name }; me = info.me; renderHeader(info);
@@ -107,7 +133,12 @@ const Groups = (() => {
     if (!cur) return;
     try {
       const fresh = await api(`/groups/${cur.id}/messages?after=${lastId}`);
-      if (fresh.length) { for (const m of fresh) addMsg(m); bottom(); }
+      if (fresh.length) {
+        const incoming = fresh.filter((m) => m.user_id !== me);
+        for (const m of fresh) addMsg(m);
+        if (incoming.length) notifyGroup(incoming[incoming.length - 1]);
+        bottom();
+      }
       if (++ticks % 5 === 0) renderHeader(await api(`/groups/${cur.id}`));
     } catch (_) { /* связь пропала — попробуем в следующий раз */ }
   }
@@ -127,7 +158,7 @@ const Groups = (() => {
 
   async function addMember() {
     if (!cur) return;
-    await ask({ title: "Имя человека в Woody", placeholder: "Имя участника", ok: "Добавить участника", maxlength: 50,
+    await ask({ title: "Имя человека в Woody", placeholder: "Начни вводить имя — появятся пользователи", ok: "Добавить участника", maxlength: 50, suggest: true,
       submit: async (v) => { const r = await api(`/groups/${cur.id}/members`, { method: "POST", body: JSON.stringify({ name: v }) }); renderHeader({ name: cur.name, members: r.members }); } });
   }
   async function leave() { if (!cur) return; try { await api(`/groups/${cur.id}`, { method: "DELETE" }); } catch (_) { /* — */ } close(); await refresh(); }

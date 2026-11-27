@@ -74,6 +74,19 @@ const Api = (() => {
     } finally { clearTimeout(timer); }
   }
 
+  async function upload(path, formData, signal) {
+    const headers = {};
+    const token = store.get(TOKEN_KEY), session = store.get(SESSION_KEY);
+    if (token) headers.Authorization = "Bearer " + token;
+    if (session) headers["X-Woody-Session"] = session;
+    let res;
+    try { res = await fetch(BASE + "/api" + path, { method: "POST", headers, body: formData, signal }); }
+    catch (e) { if (e.name === "AbortError") throw e; throw new ApiError(0, "network", String(e.message || e), "Нет связи с Woody."); }
+    let data = {}; try { data = await res.json(); } catch (_) {}
+    if (!res.ok) { const detail = data.detail; const message = (detail && typeof detail === "object" ? detail.message : detail) || "Не удалось обработать файл."; throw new ApiError(res.status, "error", message, message); }
+    return data;
+  }
+
   /** POST, ответ — бинарный (например аудио от /tts). Бросает ApiError при ошибке. */
   async function blob(path, body, signal) {
     const headers = { "Content-Type": "application/json" };
@@ -102,7 +115,7 @@ const Api = (() => {
   }
 
   return {
-    request, blob, download, health, ApiError,
+    request, blob, upload, download, health, ApiError,
     setSession: (s) => store.set(SESSION_KEY, s),
     clearSession: () => store.del(SESSION_KEY),
     hasSession: () => !!store.get(SESSION_KEY),

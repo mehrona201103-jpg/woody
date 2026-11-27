@@ -50,6 +50,9 @@ class User(Base):
     request_count: Mapped[int] = mapped_column(Integer, default=0)
     plan_period: Mapped[str | None] = mapped_column(String(10), nullable=True, default="month")  # month | year
     limit_hit_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # когда кончился лимит (для сброса через 2 ч)
+    referral_code: Mapped[str | None] = mapped_column(String(24), unique=True, nullable=True, index=True)
+    referred_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    referral_terms_accepted: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
@@ -221,6 +224,37 @@ class PaymentRequest(Base):
     admin_note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    currency: Mapped[str] = mapped_column(String(8), default="TJS")
+    method: Mapped[str] = mapped_column(String(20), default="manual")
+    external_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+
+
+class Referral(Base):
+    __tablename__ = "referrals"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    invitee_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    reward: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(String(200))
+    auth: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class GroupRead(Base):
+    __tablename__ = "group_reads"
+    __table_args__ = (UniqueConstraint("group_id", "user_id", name="uq_group_read"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("groups.id"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    last_read_id: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Feedback(Base):

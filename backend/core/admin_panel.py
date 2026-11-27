@@ -110,6 +110,8 @@ def list_payments(db: Session, limit: int = 50, plan: str | None = None) -> list
             "plan": r.plan,
             "period": r.period,
             "amount": r.amount,
+            "currency": getattr(r, "currency", "TJS"),
+            "method": getattr(r, "method", "manual"),
             "status": r.status,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "has_receipt": bool(r.receipt_data),

@@ -108,12 +108,13 @@
 
   // ---------------------------------------------------------------- ввод в чате
   const ta = $("chat-input"), sendBtn = $("btn-send"), stopBtn = $("btn-stop");
-  ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 140) + "px"; sendBtn.disabled = !ta.value.trim() && !Photos.image; };
+  ta.oninput = () => { ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight, 140) + "px"; sendBtn.disabled = !ta.value.trim() && !Photos.image && !Photos.file; };
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !matchMedia("(pointer:coarse)").matches) { e.preventDefault(); $("chat-form").requestSubmit(); } };
   $("chat-form").onsubmit = (e) => {
     e.preventDefault();
-    const t = ta.value.trim(), img = Photos.image; if ((!t && !img) || Chat.busy) return;
+    const t = ta.value.trim(), img = Photos.image, file = Photos.file; if ((!t && !img && !file) || Chat.busy) return;
     ta.value = ""; ta.style.height = "auto"; sendBtn.disabled = true;
+    if (file) { Photos.clear(); Chat.sendFile(file, t || "Изучи этот файл и проверь его содержимое."); return; }
     if (img) { Photos.clear(); Chat.send(t, "text", img); return; }
     if (TO_VOICE.test(t)) {            // «давай на голосовой режим» → микрофон включается сам, чат плавно уходит
       Chat.add("user", t); const line = "Хорошо, включаю голосовой режим.";
@@ -187,7 +188,7 @@
     Face.applyState(u.state);
     Chat.newChat(); History.refresh(); Groups.refresh();
     Auth.hide(); switchMode("chat"); $("app").classList.add("active");
-    Learn.resume();
+    Learn.resume(); startNotifications();
     api("/status").then((st) => { if (!st.providers.length) Chat.add("woody", "AI-провайдеры не настроены. Добавь AI_PROVIDER_1_* или OPENROUTER_API_KEY в Variables на сервере — и я смогу отвечать.", true); }).catch(() => {});
   }
 
@@ -211,8 +212,9 @@
 
   async function onAuthDone({ name, isNew }) {
     try {
-      if (isNew) { const c = celebrate(name); await loadSession(); await c; }
-      else await loadSession();
+      if (isNew) { const c = celebrate(name); await loadSession(); await c;
+        Chat.add("woody", `Добро пожаловать, ${name}! Перед началом общения подпишись на наш Telegram-канал: [Подписаться на Woody AI](https://t.imem.me/woodyaiapp). После подписки можешь сразу писать мне — я уже здесь.`);
+      } else await loadSession();
       Face.mount($("empty-face")); Face.setEmotion("happy"); setTimeout(() => Face.setEmotion("neutral"), 1800);
     } catch (e) { console.error("[Woody auth]", e); Auth.show(); Auth.error("Не удалось открыть аккаунт. Попробуй ещё раз."); }
   }
@@ -221,7 +223,7 @@
     voiceOn = false; Voice.stopConversation(); Voice.stopSpeaking(); stopCamera(); Chat.abort();
     WoodyCode.close(); WoodyCode.reset(); window.__plan = "free";
     if (callApi) { try { await api("/auth/logout", { method: "POST" }); } catch (_) { /* — */ } }
-    Api.clearSession(); closeSidebar(); $("settings").classList.remove("on");
+    stopNotifications(); Api.clearSession(); closeSidebar(); $("settings").classList.remove("on");
     $("app").classList.remove("active"); Chat.newChat(); History.reset(); Groups.reset(); Photos.clear();
     setTimeout(() => Auth.show(), 200);
   }
@@ -286,6 +288,16 @@
       const left = usage.remaining == null ? "∞" : String(usage.remaining);
       body.append(h("div", { className: "row" }, h("span", { textContent: "Запросы" }), h("small", { textContent: `${usage.used || 0} / ${usage.limit == null ? "∞" : usage.limit} (осталось ${left})` })));
 
+      // --- Валюта тарифов
+      body.append(section("Валюта тарифов"));
+      const currencyRow = h("div", { className: "row currency-row" });
+      for (const [code, label] of [["TJS", "Сомони"], ["RUB", "Рубли"], ["USD", "Доллары"]]) {
+        const b = h("button", { type: "button", className: "btn3d mini" + ((settings.currency || "TJS") === code ? " primary" : ""), textContent: label });
+        b.onclick = async () => { try { await save({ currency: code }); await refreshPlan(); renderSettings(); } catch (e) { Chat.add("woody", e.userMessage || "Не удалось сменить валюту.", true); } };
+        currencyRow.append(b);
+      }
+      body.append(currencyRow, note("Сомони — перевод и ручная проверка; рубли — Telegram и проверка заявки; доллары — Crypto Bot с автоматическим подтверждением."));
+
       // --- Голос
       body.append(section("Голос"));
       body.append(toggleRow("Отвечать голосом", "voice_replies", (on) => Voice.setVoiceReplies(on)));
@@ -316,6 +328,9 @@
       body.append(toggleRow("Запоминать разговоры", "memory_enabled"));
       body.append(toggleRow("Учиться на вопросах", "learn_from_chats"));
       body.append(note(`Фактов в памяти: ${mem.length}`));
+      const learnBtn = h("button", { textContent: Learn.active ? "Остановить самообучение" : "Начать самообучение", className: "btn3d wide" });
+      learnBtn.onclick = async () => { if (Learn.active) await Learn.stop(); else { try { const st = await Api.request("/learn/start", { method: "POST" }); if (st.active) { Learn.begin(); Chat.add("woody", "Начинаю самообучение. Скажи «хватит обучения», когда захочешь остановить."); } else Chat.add("woody", st.reason === "no_key" ? "Самообучение пока недоступно: на сервере не подключён AI-ключ." : "Не удалось запустить самообучение.", true); } catch (e) { Chat.add("woody", e.userMessage || "Не удалось начать обучение.", true); } } renderSettings(); };
+      body.append(learnBtn, note("Можно также написать в чате: «начинай само обучение» или «хватит обучения»."));
       const clr = h("button", { textContent: "Очистить память и историю", className: "btn3d wide" });
       clr.onclick = async () => {
         const ok = await Permissions.choose("Удалить память и историю?", [["Да", true, "danger"], ["Отмена", false]]);
@@ -357,7 +372,30 @@
         const per = usage.period === "year" ? "на год — безлимит" : "на месяц";
         body.append(note(`Тариф ${plan.toUpperCase()} ${per}. Режимы — кнопка рядом с отправкой в чате.`));
       }
-      body.append(note("Оплата: перевод → скрин чека → проверка админом в Telegram."));
+      body.append(note("Оплата: сомони/рубли подтверждаются администратором; USD — через Crypto Bot."));
+
+      body.append(section("Наши Telegram-каналы"));
+      const channel = h("a", { href: "https://t.imem.me/woodyaiapp", target: "_blank", rel: "noopener", className: "btn3d wide", textContent: "Подписаться на Woody AI" });
+      const reviews = h("a", { href: "https://t.imem.me/woodyotzivv", target: "_blank", rel: "noopener", className: "btn3d wide", textContent: "Канал отзывов пользователей" });
+      body.append(channel, reviews);
+
+      body.append(section("Реферальная программа"));
+      const refBtn = h("button", { className: "btn3d wide primary", textContent: "Получить Pro и Ultra бесплатно" });
+      const refInfo = h("div", { className: "note" });
+      const loadRef = async () => { try { const r = await api("/referrals"); refInfo.textContent = r.accepted ? `Приглашено: ${r.count}. Код: ${r.code}. Ссылка: ${r.link}` : "Ссылка и код будут созданы после принятия условий программы."; if (r.accepted && r.link) { const cp = h("button", { className: "btn3d mini", textContent: "Копировать ссылку" }); cp.onclick = async () => { await navigator.clipboard.writeText(r.link); cp.textContent = "Скопировано"; }; refInfo.append(cp); } } catch (e) { refInfo.textContent = e.userMessage || "Не удалось загрузить реферальную ссылку."; } };
+      refBtn.onclick = async () => {
+        const modal = $("modal"), txt = $("modal-text"), actions = $("modal-actions");
+        txt.textContent = "Условия реферальной программы: 10 приглашённых пользователей — Pro на 7 дней; 20 — Pro на 30 дней; 30 — Ultra на 14 дней. Засчитываются только новые аккаунты, зарегистрированные по твоей ссылке или коду. Повторные аккаунты и собственные регистрации не засчитываются.";
+        actions.innerHTML = "";
+        const label = h("label", { className: "row" }); const check = h("input", { type: "checkbox" }); label.append(check, h("span", { textContent: "Я прочитал(а) и согласен(на) с условиями" }));
+        const cancel = h("button", { type: "button", className: "btn3d", textContent: "Отмена" });
+        const accept = h("button", { type: "button", className: "btn3d primary", textContent: "Создать ссылку", disabled: true });
+        check.onchange = () => { accept.disabled = !check.checked; };
+        cancel.onclick = () => modal.classList.add("hidden");
+        accept.onclick = async () => { accept.disabled = true; try { await api("/referrals/accept", { method: "POST", body: JSON.stringify({ accepted: true }) }); modal.classList.add("hidden"); await loadRef(); refBtn.textContent = "Реферальная ссылка создана"; } catch (e) { refInfo.textContent = e.userMessage || "Не удалось включить реферальную программу."; accept.disabled = false; } };
+        actions.append(label, cancel, accept); modal.classList.remove("hidden");
+      };
+      body.append(refBtn, refInfo); loadRef();
 
       body.append(section("Обратная связь"));
       const wishBtn = h("button", { className: "btn3d wide", textContent: "💡 Пожелание по улучшению" });
@@ -379,7 +417,9 @@
     document.querySelectorAll(".period-switch .per").forEach((b) => b.classList.toggle("active", b.dataset.period === per));
     for (const k of ["pro", "ultra"]) {
       $("price-" + k).textContent = PRICE[k][per];
-      $("unit-" + k).textContent = per === "year" ? "сомони / год" : "сомони / мес";
+      const cur = (window.__planData && window.__planData.currency) || settings.currency || "TJS";
+      const unit = { TJS: "сомони", RUB: "руб.", USD: "$" }[cur] || cur;
+      $("unit-" + k).textContent = per === "year" ? `${unit} / год` : `${unit} / мес`;
     }
     $("plans-note").textContent = per === "year" ? "На год — безлимит запросов." : "Месячные тарифы с лимитом. Закончился — через 2 часа счётчик обнулится.";
     const d = window.__planData; if (d) fillFeats(d, per);
@@ -449,13 +489,20 @@
     payPlan = plan;
     payReceipt = "";
     $("pay-title").textContent = plan === "ultra" ? "Оплата Ultra" : "Оплата Pro";
-    $("pay-amount").textContent = `${PRICE[plan][payPeriod]} сомони / ${payPeriod === "year" ? "год" : "месяц"}`;
+    const currency = (window.__planData && window.__planData.currency) || settings.currency || "TJS";
+    const symbols = { TJS: "сомони", RUB: "₽", USD: "$" };
+    const prices = window.__planData && window.__planData.prices ? window.__planData.prices : PRICE;
+    $("pay-amount").textContent = `${prices[plan][payPeriod]} ${symbols[currency] || currency} / ${payPeriod === "year" ? "год" : "месяц"}`;
     const info = window.__payInfo || {};
-    $("pay-req").textContent = [info.holder, info.requisites].filter(Boolean).join("\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
+    $("pay-req").textContent = currency === "USD" ? "Оплата будет создана через Crypto Bot. После успешной оплаты тариф включится автоматически." : [info.holder, info.requisites].filter(Boolean).join("\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
     $("pay-preview").classList.add("hidden");
     $("pay-preview").innerHTML = "";
     $("pay-err").textContent = "";
-    $("pay-send").disabled = true;
+    $("pay-send").disabled = currency === "USD";
+    $("pay-pick").classList.toggle("hidden", currency === "USD");
+    const paySteps = $("pay-modal").querySelector(".modal-box > .note");
+    if (paySteps) paySteps.textContent = currency === "USD" ? "Нажми «Перейти к оплате» — откроется счёт Crypto Bot. После оплаты тариф активируется автоматически." : "1) Переведи сумму 2) Загрузи скрин чека 3) Отправь заявку — админ проверит";
+    $("pay-send").textContent = currency === "USD" ? "Перейти к оплате" : "Отправить чек на проверку";
     $("pay-modal").classList.remove("hidden");
   }
   $("pay-cancel").onclick = () => $("pay-modal").classList.add("hidden");
@@ -480,17 +527,20 @@
   };
   $("pay-send").onclick = async () => {
     $("pay-err").textContent = "";
-    if (!payReceipt || !payReceipt.startsWith("data:image")) {
+    const currency = (window.__planData && window.__planData.currency) || settings.currency || "TJS";
+    if (currency !== "USD" && (!payReceipt || !payReceipt.startsWith("data:image"))) {
       $("pay-err").textContent = "Сначала загрузи скрин чека";
       return;
     }
     $("pay-send").disabled = true;
     $("pay-err").textContent = "Отправляю заявку…";
     try {
-      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPeriod, receipt: payReceipt }) });
+      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPeriod, receipt: payReceipt, currency, method: currency === "USD" ? "crypto" : "manual" }) });
       $("pay-modal").classList.add("hidden");
       $("pay-err").textContent = "";
-      Chat.add("woody", res.message || "Заявка отправлена. Админ проверит чек.");
+      Chat.add("woody", res.message || "Заявка отправлена. Админ проверит оплату.");
+      if (res.url) location.assign(res.url);
+      else if (res.telegram_url) location.assign(res.telegram_url);
     } catch (e) {
       console.error("[Woody pay]", e);
       $("pay-err").textContent = e.userMessage || e.message || "Не удалось отправить чек";
@@ -614,10 +664,10 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.7.0";
+  const LOCAL_VER = "0.7.4";
   async function checkUpdate() {
     try {
-      const r = await fetch("/api/health", { cache: "no-store" });
+      const r = await fetch("/api/version", { cache: "no-store" });
       if (!r.ok) return;
       const data = await r.json();
       if (data && data.version && data.version !== LOCAL_VER) {

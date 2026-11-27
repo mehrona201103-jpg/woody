@@ -184,3 +184,17 @@ Authorized JavaScript origins: адрес вашего сайта (https://…up
 
 ## Android fullscreen
 Для сборки в PWABuilder выберите Android Display mode: **Fullscreen**. В PWA manifest задан `display: fullscreen`; TWA package option также нужно выбрать вручную.
+
+
+## Валюты и платёжные провайдеры (v0.7.4 update)
+
+- В настройках пользователя можно выбрать TJS (сомони), RUB (рубли) или USD (доллары).
+- Для ручных оплат в RUB укажи `TELEGRAM_PAYMENT_USERNAME` без `@`; чек прикладывается в приложении, заявка уходит в админ-бот.
+- Для автоматической оплаты USD укажи `CRYPTO_PAY_API_TOKEN` из `@CryptoBot` → Crypto Pay и настрой webhook `https://ТВОЙ-ДОМЕН/api/crypto/webhook` для события `invoice_paid`. Платёж создаётся в USDT по сумме USD и активирует тариф после проверенного webhook.
+- Для заявок и ручного подтверждения должны быть настроены `TELEGRAM_ADMIN_BOT_TOKEN` и `TELEGRAM_ADMIN_CHAT_ID`.
+- Реферальные коды создаются только после принятия условий в настройках; ссылка передаёт код в регистрацию.
+
+
+### Push-уведомления групп
+
+Чтобы сообщения приходили даже когда PWA свёрнуто или закрыто, сгенерируй пару VAPID-ключей (`npx web-push generate-vapid-keys`) и задай `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_CLAIMS_EMAIL` в переменных сервера. Пользователь должен разрешить уведомления при первом открытии группы. Без VAPID-ключей работают только уведомления внутри открытого приложения.

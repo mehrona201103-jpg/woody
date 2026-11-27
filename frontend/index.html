@@ -13,7 +13,7 @@
   <link rel="icon" href="/assets/icon-192.png" sizes="192x192">
   <link rel="apple-touch-icon" href="/assets/icon-192.png">
   <title>Woody</title>
-  <link rel="stylesheet" href="/css/style.css?v=070">
+  <link rel="stylesheet" href="/css/style.css">
 </head>
 <body>
   <div id="boot" class="boot"></div>
@@ -43,6 +43,8 @@
           <form id="auth-form" novalidate>
             <label class="field name-field"><span>Как мне тебя называть?</span>
               <input id="auth-name" autocomplete="nickname" maxlength="50" placeholder="Имя"></label>
+            <label class="field referral-field"><span>Реферальный код (если есть)</span>
+              <input id="auth-referral" autocomplete="off" maxlength="24" placeholder="Код друга"></label>
             <label class="field"><span>Почта</span>
               <input id="auth-email" type="email" inputmode="email" autocomplete="email" placeholder="you@mail.com"></label>
             <label class="field"><span>Пароль</span>
@@ -75,7 +77,7 @@
         <button id="nav-chat" class="nav-item active"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Новый чат</button>
         <button id="nav-voice" class="nav-item"><svg viewBox="0 0 24 24"><path d="M4 10v4M8 6v12M12 3v18M16 8v8M20 11v2"/></svg>Голосовой режим</button>
         <button id="nav-code" class="nav-item nav-code"><svg viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg>Woody Code<span class="nav-tag">Ultra</span></button>
-        <div class="side-sec"><span>Группы</span><button id="grp-new" class="mini-plus" aria-label="Создать группу"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
+        <div class="side-sec"><span>Группы</span><b id="group-unread" class="unread-badge hidden"></b><button id="grp-new" class="mini-plus" aria-label="Создать группу"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></div>
         <div id="group-list" class="side-list"></div>
         <div class="side-sec"><span>История чатов</span></div>
         <div id="chat-list" class="side-list"></div>
@@ -105,11 +107,11 @@
       <footer class="composer-wrap">
         <div id="modes-menu" class="modes-menu hidden" role="menu"></div>
         <div id="attach-prev" class="attach-prev hidden"><img id="attach-img" alt="Фото для Woody"><button id="attach-x" type="button" aria-label="Убрать фото"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
-        <input id="file-pick" type="file" accept="image/*" hidden>
+        <input id="file-pick" type="file" accept="image/*,.pdf,.docx,.xlsx,.xlsm,.txt,.md,.csv,.json,.py,.js,.html,.css,.xml,.yaml,.yml,.log,.sql,.java,.cpp,.c,.go,.rs" hidden>
         <input id="file-cam" type="file" accept="image/*" capture="environment" hidden>
         <form id="chat-form" class="composer" autocomplete="off">
-          <button id="btn-attach" type="button" class="tool" aria-label="Загрузить фото"><svg viewBox="0 0 24 24"><path d="M21 12.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3"/></svg></button>
-          <button id="btn-camera" type="button" class="tool" aria-label="Сфотографировать для Woody"><svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
+          <button id="btn-attach" type="button" class="tool" aria-label="Прикрепить фото или файл"><svg viewBox="0 0 24 24"><path d="M21 12.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.3-8.3"/></svg></button>
+          <button id="btn-camera" type="button" class="tool" aria-label="Открыть камеру и сделать снимок"><svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></button>
           <textarea id="chat-input" rows="1" placeholder="Напиши Woody…" maxlength="2000" enterkeyhint="send"></textarea>
           <button id="btn-modes" type="button" class="tool modes-btn hidden" aria-label="Режимы Woody"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg></button>
           <button id="btn-stop" type="button" class="round stop hidden" aria-label="Остановить"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></button>
@@ -350,23 +352,23 @@
     <button type="button" id="update-btn">Обновить</button>
   </div>
 
-  <script src="/js/avatars.js?v=070"></script>
-  <script src="/js/richtext.js?v=070"></script>
-  <script src="/js/api.js?v=070"></script>
-  <script src="/js/face.js?v=070"></script>
-  <script src="/js/permissions.js?v=070"></script>
-  <script src="/js/voice.js?v=070"></script>
-  <script src="/js/gestures.js?v=070"></script>
-  <script src="/js/hands.js?v=070"></script>
-  <script src="/js/device.js?v=070"></script>
-  <script src="/js/chat.js?v=070"></script>
-  <script src="/js/photos.js?v=070"></script>
-  <script src="/js/history.js?v=070"></script>
-  <script src="/js/transfer.js?v=070"></script>
-  <script src="/js/airdrop.js?v=070"></script>
-  <script src="/js/learn.js?v=070"></script>
-  <script src="/js/code.js?v=070"></script>
-  <script src="/js/auth.js?v=070"></script>
-  <script src="/js/app.js?v=070"></script>
+  <script src="/js/avatars.js"></script>
+  <script src="/js/richtext.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/face.js"></script>
+  <script src="/js/permissions.js"></script>
+  <script src="/js/voice.js"></script>
+  <script src="/js/gestures.js"></script>
+  <script src="/js/hands.js"></script>
+  <script src="/js/device.js"></script>
+  <script src="/js/chat.js"></script>
+  <script src="/js/photos.js"></script>
+  <script src="/js/history.js"></script>
+  <script src="/js/transfer.js"></script>
+  <script src="/js/airdrop.js"></script>
+  <script src="/js/learn.js"></script>
+  <script src="/js/code.js"></script>
+  <script src="/js/auth.js"></script>
+  <script src="/js/app.js"></script>
 </body>
 </html>

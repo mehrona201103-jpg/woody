@@ -124,16 +124,18 @@ const Voice = (() => {
       if (engine === "browser") { if (!(await speakBrowser(text, tone, my)) && !warned) { warned = true; window.dispatchEvent(new CustomEvent("woody:novoice")); } return; }
       const chunks = split(text);
       const jobs = chunks.map((c) => fetchChunk(c, tone, my));
-      let played = false;
+      let played = false, browserRemainder = "";
       for (let i = 0; i < jobs.length; i++) {
         const url = await jobs[i];
         if (my !== token) return;
         if (url) { played = true; await playUrl(url, my); }
+        else { browserRemainder = chunks.slice(i).join(" "); break; }
       }
       if (my !== token) return;
       cancelAnimationFrame(raf); Face.setMouthLevel(null); Face.stopTalking();
-      if (!played) { // голос провайдера не ответил (например, бесплатный тариф) — выручает голос браузера
-        if (!(await speakBrowser(text, tone, my)) && !warned) { warned = true; window.dispatchEvent(new CustomEvent("woody:novoice")); }
+      if (browserRemainder || !played) { // если серверный голос не ответил, оставшуюся речь произносит браузер
+        const fallbackText = browserRemainder || text;
+        if (!(await speakBrowser(fallbackText, tone, my)) && !warned) { warned = true; window.dispatchEvent(new CustomEvent("woody:novoice")); }
       }
     } finally { if (my === token) speakingNow = false; }
   }

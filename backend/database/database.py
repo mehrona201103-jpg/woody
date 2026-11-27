@@ -46,6 +46,12 @@ def _added_columns() -> list[tuple[str, str, str]]:
         ("users", "request_count", "INTEGER DEFAULT 0"),
         ("users", "plan_period", "VARCHAR(10) DEFAULT 'month'"),
         ("users", "limit_hit_at", ts),
+        ("users", "referral_code", "VARCHAR(24)"),
+        ("users", "referred_by", "INTEGER"),
+        ("users", "referral_terms_accepted", "BOOLEAN DEFAULT FALSE"),
+        ("payment_requests", "currency", "VARCHAR(8) DEFAULT 'TJS'"),
+        ("payment_requests", "method", "VARCHAR(20) DEFAULT 'manual'"),
+        ("payment_requests", "external_id", "VARCHAR(100)"),
     ]
 
 

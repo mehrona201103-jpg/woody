@@ -3,11 +3,13 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile, File, Form
 from fastapi.responses import FileResponse, JSONResponse, Response
 import asyncio
 import httpx
@@ -26,7 +28,7 @@ from backend.core.billing import PLANS, FREE_LIMIT, PRICES, CURRENCY, RESET_HOUR
 from backend.core import codegen, agent as code_agent
 from backend.core.admin_notify import notify_feedback, notify_payment, decide_payment, handle_update, setup_webhook, bot_token
 from backend.core import admin_panel
-from backend.database.models import Feedback, PaymentRequest
+from backend.database.models import Feedback, PaymentRequest, Referral, GroupRead, PushSubscription
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
 from backend.core.mind import Mind
@@ -104,7 +106,7 @@ async def require_token(request: Request, call_next):
     path = request.url.path
     # Публичны: health, страницы и проверка/погашение transfer-токена (их защищает сам одноразовый токен).
     public = (path in ("/api/health", "/api/version", "/api/admin/telegram", "/api/admin/bot-status", "/api/admin/setup-webhook") or path in ("/api/transfer/check", "/api/transfer/redeem")
-              or path.startswith("/api/auth/") or path == "/api/tts/greeting")
+              or path.startswith("/api/auth/") or path == "/api/tts/greeting" or path == "/api/crypto/webhook")
     if settings.access_token and path.startswith("/api/") and not public:
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
         authorized = hmac.compare_digest(supplied, settings.access_token)
@@ -137,13 +139,25 @@ class UserBody(BaseModel):
 
 
 class PaymentBody(BaseModel):
-    plan: str = Field(min_length=3, max_length=20)  # pro | ultra
+    plan: str = Field(min_length=3, max_length=20)
     period: str = Field(default="month", max_length=20)
-    receipt: str = Field(default="", max_length=6_000_000)  # data URL скрина (после сжатия на клиенте)
+    receipt: str = Field(default="", max_length=6_000_000)
+    currency: str = Field(default="TJS", max_length=8)
+    method: str = Field(default="manual", max_length=20)
+
+class ReferralAcceptBody(BaseModel):
+    accepted: bool
+
+class ReferralCodeBody(BaseModel):
+    code: str = Field(min_length=3, max_length=24)
+
+class PushSubscriptionBody(BaseModel):
+    endpoint: str = Field(min_length=20, max_length=2000)
+    keys: dict[str, str]
 
 
 class ChatBody(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+    text: str = Field(min_length=1, max_length=60000)
     source: str = "text"
     chat_id: int | None = None
     image: str | None = Field(default=None, max_length=1_800_000)  # data:image/jpeg;base64,… — фото или снимок камеры
@@ -187,6 +201,7 @@ class SettingsBody(BaseModel):
     learn_from_chats: bool | None = None
     voice_engine: str | None = None
     voice_name: str | None = None
+    currency: str | None = None
 
 
 class TTSBody(BaseModel):
@@ -216,6 +231,7 @@ class RegisterBody(BaseModel):
     email: str = Field(min_length=3, max_length=200)
     password: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=1, max_length=50)
+    referral_code: str | None = Field(default=None, max_length=24)
 
 
 class LoginBody(BaseModel):
@@ -225,6 +241,7 @@ class LoginBody(BaseModel):
 
 class GoogleBody(BaseModel):
     access_token: str = Field(min_length=10, max_length=4000)
+    referral_code: str | None = Field(default=None, max_length=24)
 
 
 class RenameBody(BaseModel):
@@ -242,10 +259,20 @@ def auth_config() -> dict:
 
 @app.post("/api/auth/register")
 def auth_register(body: RegisterBody, db: Session = Depends(get_db)) -> dict:
+    ref_owner = None
+    if body.referral_code:
+        ref_owner = db.scalar(select(User).where(func.lower(User.referral_code) == body.referral_code.strip().lower()))
+        if ref_owner is None:
+            raise HTTPException(422, {"code": "bad_referral", "message": "Реферальный код не найден."})
     try:
         user, secret = register_email(db, body.email, body.password, body.name)
     except AuthError as exc:
         raise _auth_http(exc) from exc
+    if ref_owner and ref_owner.id != user.id:
+        user.referred_by = ref_owner.id
+        db.add(Referral(owner_id=ref_owner.id, invitee_id=user.id))
+        db.commit()
+        _apply_referral_reward(db, ref_owner.id)
     return {"session": secret, "name": user.name, "new": True}
 
 
@@ -279,7 +306,14 @@ async def auth_google(body: GoogleBody, db: Session = Depends(get_db)) -> dict:
     if not profile.get("email_verified", True) or not profile.get("sub"):
         raise HTTPException(401, {"code": "google_failed", "message": "Почта Google не подтверждена."})
     name = profile.get("given_name") or profile.get("name") or ""
+    owner = None
+    if body.referral_code:
+        owner = db.scalar(select(User).where(func.lower(User.referral_code) == body.referral_code.strip().lower()))
+        if owner is None:
+            raise HTTPException(422, {"code":"bad_referral", "message":"Реферальный код не найден."})
     user, secret, created = login_google(db, profile["sub"], profile.get("email", ""), name, profile.get("picture"))
+    if created and owner and owner.id != user.id:
+        user.referred_by = owner.id; db.add(Referral(owner_id=owner.id, invitee_id=user.id)); db.commit(); _apply_referral_reward(db, owner.id)
     return {"session": secret, "name": user.name, "new": created}
 
 
@@ -306,11 +340,11 @@ def admin_page() -> FileResponse:
 
 @app.get("/api/health")
 def health() -> dict[str, object]:
-    return {"status": "ok", "service": "woody", "version": "0.7.0", "build": "2026-11-26b"}
+    return {"status": "ok", "service": "woody"}
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.7.0", "build": "2026-11-26b"}
+    return {"version": "0.7.4", "build": "2026-11-26c"}
 
 
 # ------------------------------------------------------------------ веб-админка
@@ -371,72 +405,98 @@ async def admin_panel_decide(request: Request, db: Session = Depends(get_db)) ->
 # ------------------------------------------------------------------ тарифы / оплата
 @app.get("/api/plans")
 def api_plans(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
-    import os
     plan = effective_plan(user)
-    return {
-        "plans": PLANS,
-        "prices": PRICES,
-        "currency": CURRENCY,
-        "reset_hours": RESET_HOURS,
-        "period": getattr(user, "plan_period", None) or "month",
-        "current": plan,
-        "plan_until": user.plan_until.isoformat() if user.plan_until else None,
-        "used": int(user.request_count or 0),
-        "remaining": remaining_requests(user),
-        "free_limit": FREE_LIMIT,
-        "payment": {
-            "requisites": (admin_panel.load_settings().get("payment_requisites") or os.getenv("PAYMENT_REQUISITES") or "Укажите реквизиты в админке или PAYMENT_REQUISITES").strip(),
-            "holder": (admin_panel.load_settings().get("payment_holder") or os.getenv("PAYMENT_HOLDER") or "").strip(),
-            "note": "После оплаты загрузите скрин чека. Админ проверит и активирует тариф.",
-        },
+    currency = (UserSettings(db, user.id).get("currency") or "TJS").upper()
+    price_map = {
+        "TJS": {"pro": {"month": "9.99", "year": "29.99"}, "ultra": {"month": "19.99", "year": "39.99"}},
+        "RUB": {"pro": {"month": "199", "year": "399"}, "ultra": {"month": "399", "year": "599"}},
+        "USD": {"pro": {"month": "0.99", "year": "1.99"}, "ultra": {"month": "1.99", "year": "3.99"}},
     }
+    return {"plans": PLANS, "prices": price_map.get(currency, price_map["TJS"]), "currency": currency,
+        "currencies": ["TJS", "RUB", "USD"], "reset_hours": RESET_HOURS,
+        "period": getattr(user, "plan_period", None) or "month", "current": plan,
+        "plan_until": user.plan_until.isoformat() if user.plan_until else None,
+        "used": int(user.request_count or 0), "remaining": remaining_requests(user), "free_limit": FREE_LIMIT,
+        "payment": {"requisites": (admin_panel.load_settings().get("payment_requisites") or os.getenv("PAYMENT_REQUISITES") or "").strip(),
+            "holder": (admin_panel.load_settings().get("payment_holder") or os.getenv("PAYMENT_HOLDER") or "").strip(),
+            "telegram_username": os.getenv("TELEGRAM_PAYMENT_USERNAME", "").strip().lstrip("@"),
+            "note": "После ручной оплаты приложи скриншот чека. Заявку подтвердит администратор."}}
 
 
 @app.post("/api/payments")
 async def api_payment(body: PaymentBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
-    plan = body.plan.lower().strip()
-    if plan not in ("pro", "ultra"):
-        raise HTTPException(422, {"code": "bad_plan", "message": "Только pro или ultra."})
-    if not body.receipt or not str(body.receipt).startswith("data:image"):
-        raise HTTPException(422, {"code": "need_receipt", "message": "Нужен скриншот чека (фото JPG/PNG)."})
-    if len(body.receipt) < 200:
-        raise HTTPException(422, {"code": "need_receipt", "message": "Файл чека пустой или повреждён."})
-    try:
-        req = create_payment(db, user, plan, body.period, body.receipt)
-    except Exception as exc:
-        logger.exception("create_payment: %s", exc)
-        raise HTTPException(500, {"code": "pay_save", "message": "Не удалось сохранить заявку. Попробуй ещё раз."})
-    try:
-        sent = await notify_payment(db, req, user)
-    except Exception as exc:
-        logger.exception("notify_payment: %s", exc)
-        sent = False
-    msg = "Заявка отправлена. Админ проверит чек и активирует тариф."
-    if not sent:
-        msg = "Заявка сохранена. Если админ-бот настроен — уведомление уйдёт. Иначе проверь TELEGRAM_ADMIN_BOT_TOKEN и CHAT_ID."
-    return {"id": req.id, "status": req.status, "notified": bool(sent), "message": msg}
+    import os
+    plan, period, currency = body.plan.lower().strip(), ("year" if body.period == "year" else "month"), body.currency.upper()
+    if plan not in ("pro", "ultra") or currency not in ("TJS", "RUB", "USD"):
+        raise HTTPException(422, {"code": "bad_payment", "message": "Неверный тариф или валюта."})
+    prices = {"TJS": {"pro": {"month":"9.99","year":"29.99"},"ultra":{"month":"19.99","year":"39.99"}},
+              "RUB": {"pro": {"month":"199","year":"399"},"ultra":{"month":"399","year":"599"}},
+              "USD": {"pro": {"month":"0.99","year":"1.99"},"ultra":{"month":"1.99","year":"3.99"}}}
+    amount = prices[currency][plan][period]
+    if currency == "USD":
+        token = os.getenv("CRYPTO_PAY_API_TOKEN", "").strip()
+        if not token:
+            raise HTTPException(503, {"code":"crypto_unconfigured", "message":"Оплата в USD пока не подключена: администратору нужно добавить CRYPTO_PAY_API_TOKEN."})
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post("https://pay.crypt.bot/api/createInvoice",
+                headers={"Crypto-Pay-API-Token": token},
+                json={"asset":"USDT", "amount":amount, "description":f"Woody {plan.upper()} {period} user#{user.id}",
+                      "payload":json.dumps({"user_id":user.id,"plan":plan,"period":period}), "allow_comments":False, "allow_anonymous":False})
+            payload = response.json()
+        if not payload.get("ok") or not (payload.get("result") or {}).get("pay_url"):
+            logger.error("Crypto Pay invoice error: %s", payload)
+            raise HTTPException(502, {"code":"crypto_invoice", "message":"Crypto Bot не смог создать счёт. Попробуй позже."})
+        inv = payload["result"]
+        req = PaymentRequest(user_id=user.id, plan=plan, period=period, amount=amount, currency="USD", method="crypto", external_id=str(inv.get("invoice_id")), status="pending")
+        db.add(req); db.commit()
+        return {"method":"crypto", "url":inv["pay_url"], "invoice_id":inv.get("invoice_id"), "message":"Счёт создан в Crypto Bot. После подтверждения оплаты тариф активируется автоматически через webhook."}
+    if not body.receipt or not body.receipt.startswith("data:image") or len(body.receipt) < 200:
+        raise HTTPException(422, {"code":"need_receipt", "message":"Нужен скриншот подтверждения оплаты."})
+    username = os.getenv("TELEGRAM_PAYMENT_USERNAME", "").strip().lstrip("@")
+    if currency == "RUB" and not username:
+        raise HTTPException(503, {"code":"telegram_payment_unconfigured", "message":"Добавь TELEGRAM_PAYMENT_USERNAME в настройки сервера, чтобы принимать рубли."})
+    req = PaymentRequest(user_id=user.id, plan=plan, period=period, amount=amount, currency=currency,
+        method="telegram_manual" if currency == "RUB" else "manual", receipt_data=body.receipt[:5_000_000], status="pending")
+    db.add(req); db.commit(); db.refresh(req)
+    sent = await notify_payment(db, req, user)
+    result = {"method":req.method, "request_id":req.id, "message":"Заявка отправлена администратору. После проверки тариф появится в аккаунте."}
+    if currency == "RUB": result["telegram_url"] = f"https://t.me/{username}?text=" + quote(f"Оплата Woody {plan.upper()} {period}: {amount} RUB. Заявка #{req.id}. Скрин оплаты прикреплён в приложении.")
+    if not sent: result["message"] += " Внимание: уведомление админу не доставлено — проверь настройки Telegram-бота."
+    return result
 
 
-class FeedbackBody(BaseModel):
-    text: str = Field(min_length=5, max_length=3000)
-
-
-class DonationBody(BaseModel):
-    amount: str = Field(min_length=1, max_length=12)
-    note: str = Field(default="", max_length=300)
-    receipt: str = Field(default="", max_length=6_000_000)
+@app.post("/api/crypto/webhook")
+async def crypto_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
+    import hashlib, hmac, os
+    secret = os.getenv("CRYPTO_PAY_API_TOKEN", "").strip()
+    body = await request.body()
+    signature = request.headers.get("crypto-pay-api-signature", "")
+    if not secret or not signature:
+        raise HTTPException(403, "forbidden")
+    key = hashlib.sha256(secret.encode()).digest()
+    expected = hmac.new(key, body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature): raise HTTPException(403, "bad signature")
+    update = json.loads(body or b"{}")
+    invoice = update.get("payload", {})
+    if update.get("update_type") == "invoice_paid" and invoice.get("status") == "paid":
+        req = db.scalar(select(PaymentRequest).where(PaymentRequest.external_id == str(invoice.get("invoice_id"))))
+        if req and req.status == "pending":
+            req.status = "approved"; req.decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
+            from backend.core.billing import activate_plan
+            target = db.get(User, req.user_id)
+            if target: activate_plan(db, target, req.plan, req.period)
+            db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/feedback")
 async def api_feedback(body: FeedbackBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
-    since = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=1)
-    recent = db.scalar(select(func.count()).select_from(Feedback).where(Feedback.user_id == user.id, Feedback.created_at > since)) or 0
-    if recent >= 5:
-        raise HTTPException(429, {"code": "too_many", "message": "Много пожеланий за час. Попробуй позже."})
-    fb = Feedback(user_id=user.id, text=body.text.strip())
-    db.add(fb); db.commit(); db.refresh(fb)
-    sent = await notify_feedback(fb, user)
-    return {"ok": True, "notified": sent, "message": "Спасибо! Пожелание отправлено — админ рассмотрит и улучшит Woody."}
+    row = Feedback(user_id=user.id, text=body.text.strip())
+    db.add(row); db.commit(); db.refresh(row)
+    notified = False
+    try: notified = await notify_feedback(row, user)
+    except Exception as exc: logger.warning("feedback notify failed: %s", exc)
+    return {"ok": True, "notified": notified, "message": "Спасибо! Пожелание сохранено."}
 
 
 @app.post("/api/donations")
@@ -617,6 +677,15 @@ async def _see(body: ChatBody, user: User, db: Session, chat: ChatSession) -> di
 
 
 async def _chat(body: ChatBody, user: User, db: Session, source: str = "text") -> dict:
+    command = body.text.strip().lower()
+    if not body.image and re.search(r"(?:начинай|начни|запусти|начать)\s+(?:само\s*)?обучени", command):
+        started = LEARNER.start(router, SessionLocal, settings.self_learn_max)
+        if not started and not LEARNER.active:
+            return {"reply": "Не могу начать самообучение: на сервере пока нет подключённого AI-ключа или лимит недоступен.", "tone":"calm", "learning":LEARNER.status(), "chat_id": body.chat_id}
+        return {"reply": "Начинаю самообучение. Буду сохранять полученные знания в мозге Woody. Напиши «хватит обучения», чтобы остановить.", "tone":"calm", "learning":LEARNER.status(), "chat_id": body.chat_id}
+    if not body.image and re.search(r"(?:хватит|останови|остановить|прекрати)\s+(?:само\s*)?обучени", command):
+        LEARNER.stop()
+        return {"reply": "Хорошо, остановил самообучение. Всё изученное сохранено.", "tone":"calm", "learning":LEARNER.status(), "chat_id": body.chat_id}
     ok, usage = can_request(user, db)
     if not ok:
         if usage.get("plan") in ("pro", "ultra"):
@@ -739,6 +808,40 @@ async def voice(body: ChatBody, user: User = Depends(require_user), db: Session 
     return await _chat(body, user, db, "voice")
 
 
+@app.post("/api/files/analyze")
+async def analyze_file(file: UploadFile = File(...), question: str = Form(default="Изучи этот файл и объясни его содержимое."),
+                       user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    """Извлекает текст из документов, таблиц и исходников и передаёт Woody для анализа."""
+    import io
+    name = (file.filename or "document").replace("\\", "/").split("/")[-1][:180]
+    raw = await file.read(12 * 1024 * 1024 + 1)
+    if len(raw) > 12 * 1024 * 1024: raise HTTPException(413, "Файл больше 12 МБ")
+    ext = Path(name).suffix.lower()
+    try:
+        if ext == ".pdf":
+            from pypdf import PdfReader
+            reader = PdfReader(io.BytesIO(raw)); content = "\n".join(page.extract_text() or "" for page in reader.pages[:80])
+        elif ext == ".docx":
+            from docx import Document
+            doc = Document(io.BytesIO(raw)); content = "\n".join(p.text for p in doc.paragraphs)
+            for table in doc.tables: content += "\n" + "\n".join(" | ".join(c.text for c in row.cells) for row in table.rows)
+        elif ext in (".xlsx", ".xlsm"):
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+            content = "\n".join(f"[{ws.title}]\n" + "\n".join(" | ".join(str(v or "") for v in row) for row in ws.iter_rows(values_only=True)) for ws in wb.worksheets)
+        elif ext == ".doc":
+            raise ValueError("Формат DOC устарел. Сохрани документ как DOCX или PDF.")
+        else:
+            content = raw.decode("utf-8-sig", errors="replace")
+    except ImportError as exc:
+        raise HTTPException(503, "На сервере не установлен модуль для чтения этого формата.") from exc
+    except Exception as exc:
+        raise HTTPException(422, f"Не удалось прочитать файл: {exc}") from exc
+    if not content.strip(): raise HTTPException(422, "В файле не найден читаемый текст. Для сканированных PDF нужен OCR.")
+    prompt = f"Проверь файл «{name}» ({len(raw)} байт). Запрос пользователя: {question.strip()[:500]}\n\nСодержимое файла:\n{content[:55000]}"
+    return await _chat(ChatBody(text=prompt), user, db, "text")
+
+
 @app.get("/api/history")
 def history(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
     return [{"role": r.role, "text": r.text} for r in MemoryService(db).recent_messages(user.id, 60, include_voice=True)]
@@ -808,6 +911,70 @@ def _msg_payload(m: GroupMessage) -> dict:
     return {"id": m.id, "user_id": m.user_id, "text": m.text}
 
 
+@app.get("/api/push/config")
+def push_config(user: User = Depends(require_user)) -> dict:
+    return {"public_key": os.getenv("VAPID_PUBLIC_KEY", "").strip()}
+
+@app.post("/api/push/subscribe")
+def push_subscribe(body: PushSubscriptionBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    parsed_endpoint = urlparse(body.endpoint)
+    host = (parsed_endpoint.hostname or "").lower()
+    allowed_hosts = ("fcm.googleapis.com", "push.services.mozilla.com", "web.push.apple.com", "notify.windows.com")
+    if parsed_endpoint.scheme != "https" or not any(host == suffix or host.endswith("." + suffix) for suffix in allowed_hosts):
+        raise HTTPException(422, "Недопустимый адрес push-сервиса")
+    p256dh, auth = body.keys.get("p256dh", ""), body.keys.get("auth", "")
+    if not p256dh or not auth: raise HTTPException(422, "Некорректная подписка push")
+    row = db.scalar(select(PushSubscription).where(PushSubscription.endpoint == body.endpoint))
+    if row is None: row = PushSubscription(user_id=user.id, endpoint=body.endpoint, p256dh=p256dh, auth=auth)
+    else: row.user_id, row.p256dh, row.auth = user.id, p256dh, auth
+    db.add(row); db.commit()
+    return {"ok":True}
+
+@app.delete("/api/push/subscribe")
+def push_unsubscribe(body: PushSubscriptionBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    db.execute(delete(PushSubscription).where(PushSubscription.user_id == user.id, PushSubscription.endpoint == body.endpoint)); db.commit()
+    return {"ok":True}
+
+async def _send_group_push(db: Session, group_id: int, sender_id: int | None, sender_name: str, message: str) -> None:
+    private_key = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+    if not private_key: return
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError:
+        logger.warning("pywebpush не установлен; push-уведомления отключены")
+        return
+    members = db.scalars(select(GroupMember).where(GroupMember.group_id == group_id, GroupMember.user_id != (sender_id or -1))).all()
+    claims = {"sub": os.getenv("VAPID_CLAIMS_EMAIL", "mailto:admin@example.com")}
+    payload = json.dumps({"title":"Новое сообщение · Woody", "body":f"{sender_name}: {message[:140]}", "url":"/", "tag":f"group-{group_id}"}, ensure_ascii=False)
+    for member in members:
+        subscriptions = db.scalars(select(PushSubscription).where(PushSubscription.user_id == member.user_id)).all()
+        for sub in subscriptions:
+            info = {"endpoint":sub.endpoint,"keys":{"p256dh":sub.p256dh,"auth":sub.auth}}
+            try:
+                await asyncio.to_thread(webpush, subscription_info=info, data=payload, vapid_private_key=private_key, vapid_claims=claims)
+            except WebPushException as exc:
+                if getattr(exc.response, "status_code", None) in (404, 410): db.delete(sub); db.commit()
+                else: logger.warning("Web push failed: %s", exc)
+            except Exception as exc: logger.warning("Web push error: %s", exc)
+
+@app.get("/api/notifications")
+def notifications(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    memberships = db.scalars(select(GroupMember).where(GroupMember.user_id == user.id)).all()
+    items = []
+    total = 0
+    for member in memberships:
+        group = db.get(Group, member.group_id)
+        read = db.scalar(select(GroupRead).where(GroupRead.group_id == member.group_id, GroupRead.user_id == user.id))
+        last_read = read.last_read_id if read else 0
+        count = db.scalar(select(func.count()).select_from(GroupMessage).where(
+            GroupMessage.group_id == member.group_id, GroupMessage.id > last_read,
+            (GroupMessage.user_id.is_(None)) | (GroupMessage.user_id != user.id))) or 0
+        if count:
+            items.append({"group_id":member.group_id,"name":group.name if group else "Группа","count":count})
+            total += count
+    return {"unread":total,"groups":items}
+
+
 @app.get("/api/groups")
 def list_groups(user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
     rows = db.scalars(select(Group).join(GroupMember, GroupMember.group_id == Group.id).where(GroupMember.user_id == user.id).order_by(Group.id.desc())).all()
@@ -840,6 +1007,14 @@ def group_info(group_id: int, user: User = Depends(require_user), db: Session = 
     return {"id": group.id, "name": group.name, "me": user.id, "members": _members_payload(db, group_id)}
 
 
+@app.get("/api/users/suggest")
+def suggest_users(q: str = "", user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
+    term = q.strip().lower()
+    if len(term) < 1: return []
+    rows = db.scalars(select(User).where(User.id != user.id, func.lower(User.name).like(term + "%")).order_by(User.name).limit(12)).all()
+    return [{"id":u.id,"name":u.name,"picture":u.picture} for u in rows]
+
+
 @app.post("/api/groups/{group_id}/members")
 def add_member(group_id: int, body: MemberBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
     _member(db, group_id, user)
@@ -867,7 +1042,13 @@ def leave_group(group_id: int, user: User = Depends(require_user), db: Session =
 @app.get("/api/groups/{group_id}/messages")
 def group_messages(group_id: int, after: int = 0, user: User = Depends(require_user), db: Session = Depends(get_db)) -> list[dict]:
     _member(db, group_id, user)
-    rows = db.scalars(select(GroupMessage).where(GroupMessage.group_id == group_id, GroupMessage.id > after).order_by(GroupMessage.id).limit(200))
+    rows = db.scalars(select(GroupMessage).where(GroupMessage.group_id == group_id, GroupMessage.id > after).order_by(GroupMessage.id).limit(200)).all()
+    latest = max([m.id for m in rows], default=after)
+    read = db.scalar(select(GroupRead).where(GroupRead.group_id == group_id, GroupRead.user_id == user.id))
+    if read is None:
+        read = GroupRead(group_id=group_id, user_id=user.id, last_read_id=latest); db.add(read)
+    else: read.last_read_id = max(read.last_read_id, latest)
+    db.commit()
     return [_msg_payload(m) for m in rows]
 
 
@@ -878,6 +1059,11 @@ async def post_group_message(group_id: int, body: GroupMsgBody, user: User = Dep
     mine = GroupMessage(group_id=group_id, user_id=user.id, text=body.text.strip())
     db.add(mine)
     db.commit()
+    await _send_group_push(db, group_id, user.id, user.name, body.text.strip())
+    # Woody молчит, пока его явно не позвали по имени.
+    if not re.search(r"(?i)(?<!\w)(?:вуди|woody)(?!\w)", body.text):
+        return [_msg_payload(mine)]
+    clean_text = re.sub(r"(?i)(?<!\w)(?:вуди|woody)[,!:;\s]*", "", body.text).strip() or body.text
     names = {u["id"]: u["name"] for u in _members_payload(db, group_id)}
     recent = list(reversed(db.scalars(select(GroupMessage).where(GroupMessage.group_id == group_id).order_by(GroupMessage.id.desc()).limit(14)).all()))
     convo = [{"role": "assistant" if m.user_id is None else "user",
@@ -886,7 +1072,7 @@ async def post_group_message(group_id: int, body: GroupMsgBody, user: User = Dep
               "Отвечай по-русски коротко и дружелюбно, обращайся к тому, кто написал, по имени. Ко всем относись одинаково. "
               "Код пиши в блоках ```язык.")
     mind = Mind(db)
-    known = mind.recall(body.text, 0.9)
+    known = mind.recall(clean_text, 0.9)
     if known:
         reply = known[0]
     else:
@@ -895,13 +1081,54 @@ async def post_group_message(group_id: int, body: GroupMsgBody, user: User = Dep
             reply, _tone = split_tone(reply)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Woody в группе: AI недоступен: %s", exc)
-            fb = mind.recall(body.text, 0.45)
+            fb = mind.recall(clean_text, 0.45)
             reply = fb[0] if fb else "Сейчас я не могу ответить — у моего AI-ключа проблема. Попробуйте позже."
     answer = GroupMessage(group_id=group_id, user_id=None, text=reply)
     db.add(answer)
     db.commit()
+    await _send_group_push(db, group_id, None, "Woody", reply)
     return [_msg_payload(mine), _msg_payload(answer)]
 
+
+# ------------------------------------------------------------------ referrals
+import secrets as _secrets
+
+def _ensure_ref_code(user: User, db: Session) -> str:
+    if not user.referral_code:
+        while True:
+            code = _secrets.token_urlsafe(7).replace("-", "").replace("_", "")[:10].upper()
+            if not db.scalar(select(User.id).where(User.referral_code == code)):
+                user.referral_code = code; db.commit(); break
+    return user.referral_code
+
+def _apply_referral_reward(db: Session, owner_id: int) -> None:
+    owner = db.get(User, owner_id)
+    if not owner: return
+    refs = db.scalars(select(Referral).where(Referral.owner_id == owner_id).order_by(Referral.id)).all()
+    count = len(refs)
+    milestones = [(30, "ultra_14d"), (20, "pro_30d"), (10, "pro_7d")]
+    for threshold, reward in milestones:
+        if count >= threshold and not any(r.reward == reward for r in refs):
+            days, plan = (14, "ultra") if reward == "ultra_14d" else ((30, "pro") if reward == "pro_30d" else (7, "pro"))
+            owner.plan = plan; owner.plan_period = "month"; owner.plan_until = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(days=days)
+            if refs:
+                refs[-1].reward = reward
+                db.add(refs[-1])
+            db.commit(); return
+
+@app.get("/api/referrals")
+def referral_info(request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    code = _ensure_ref_code(user, db) if user.referral_terms_accepted else None
+    rows = db.scalars(select(Referral).where(Referral.owner_id == user.id, Referral.invitee_id != user.id)).all()
+    base_url = (settings.public_base_url or str(request.base_url)).rstrip("/")
+    return {"code":code,"link":f"{base_url}/?ref={code}" if code else None,"count":len(rows),"accepted":bool(user.referral_terms_accepted),
+        "rewards":[{"at":10,"plan":"Pro","duration":"7 дней"},{"at":20,"plan":"Pro","duration":"30 дней"},{"at":30,"plan":"Ultra","duration":"14 дней"}]}
+
+@app.post("/api/referrals/accept")
+def referral_accept(request: Request, body: ReferralAcceptBody, user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    if not body.accepted: raise HTTPException(400, "Для создания ссылки нужно принять условия программы")
+    user.referral_terms_accepted = True; code = _ensure_ref_code(user, db); db.commit()
+    return referral_info(request, user, db)
 
 # ------------------------------------------------------------------ permissions
 def _require_known(action: str) -> None:
@@ -980,8 +1207,10 @@ def update_settings(body: SettingsBody, user: User = Depends(require_user), db: 
     for name in SETTING_DEFAULTS:
         value = getattr(body, name)
         if value is not None:
+            if name == "currency" and str(value).upper() not in ("TJS", "RUB", "USD"):
+                raise HTTPException(422, "Валюта должна быть TJS, RUB или USD")
             try:
-                us.set(name, value)
+                us.set(name, str(value).upper() if name == "currency" else value)
             except ValueError as exc:
                 raise HTTPException(422, str(exc)) from exc
     return us.all()

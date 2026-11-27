@@ -1,5 +1,5 @@
 /* Woody SW — жёсткий сброс кэша при каждой новой версии */
-const CACHE = "woody-shell-v073";
+const CACHE = "woody-shell-v074";
 self.addEventListener("install", (e) => {
   self.skipWaiting();
 });
@@ -37,4 +37,13 @@ self.addEventListener("fetch", (e) => {
       return res;
     }).catch(() => caches.match(req))
   );
+});
+
+self.addEventListener("push", (event) => {
+  let data = {}; try { data = event.data ? event.data.json() : {}; } catch (_) { data = { body: event.data ? event.data.text() : "Новое сообщение" }; }
+  event.waitUntil(self.registration.showNotification(data.title || "Woody", { body: data.body || "Новое сообщение", icon: "/assets/icon-192.png", badge: "/assets/favicon-128.png", tag: data.tag || "woody-message", data: { url: data.url || "/" } }));
+});
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close(); const target = new URL((event.notification.data && event.notification.data.url) || "/", self.location.origin).href;
+  event.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => { for (const client of clients) { if (client.url.startsWith(self.location.origin) && "focus" in client) return client.focus(); } return self.clients.openWindow(target); }));
 });

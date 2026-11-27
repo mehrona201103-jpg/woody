@@ -1,7 +1,7 @@
 /* Фото для Woody: загрузка из галереи и снимок камерой. Кадр сжимается и уходит только в этот чат — нигде не хранится. */
 const Photos = (() => {
   const $ = (id) => document.getElementById(id);
-  let dataUrl = null, stream = null;
+  let dataUrl = null, stream = null, documentFile = null;
 
   function shrink(source, w, h, max = 1280) {
     const k = Math.min(1, max / Math.max(w, h)), c = document.createElement("canvas");
@@ -17,13 +17,25 @@ const Photos = (() => {
       img.src = url;
     });
   }
-  function set(d) { dataUrl = d; $("attach-img").src = d || ""; $("attach-prev").classList.toggle("hidden", !d); $("chat-input").dispatchEvent(new Event("input")); }
-  function clear() { set(null); }
+  function set(d) { dataUrl = d; documentFile = null; $("attach-img").classList.remove("hidden"); $("attach-img").src = d || ""; $("attach-prev").classList.toggle("hidden", !d); $("chat-input").dispatchEvent(new Event("input")); }
+  function clear() { set(null); documentFile = null; const label = $("attach-prev").querySelector(".file-name"); if (label) label.remove(); }
 
   async function picked(input) {
     const f = input.files && input.files[0]; input.value = "";
     if (!f) return;
-    try { set(await fromFile(f)); $("chat-input").focus(); } catch (e) { Chat.add("woody", e.message, true); }
+    if (f.type && f.type.startsWith("image/")) {
+      documentFile = null;
+      try { set(await fromFile(f)); $("chat-input").focus(); } catch (e) { Chat.add("woody", e.message, true); }
+      return;
+    }
+    if (f.size > 12 * 1024 * 1024) { Chat.add("woody", "Файл больше 12 МБ. Выбери файл поменьше.", true); return; }
+    documentFile = f;
+    const preview = $("attach-prev"); preview.classList.remove("hidden");
+    $("attach-img").classList.add("hidden");
+    let label = preview.querySelector(".file-name");
+    if (!label) { label = document.createElement("div"); label.className = "file-name"; preview.append(label); }
+    label.textContent = `📄 ${f.name} · ${(f.size / 1024).toFixed(0)} КБ`;
+    $("chat-input").dispatchEvent(new Event("input")); $("chat-input").focus();
   }
 
   async function openLive() {
@@ -41,10 +53,10 @@ const Photos = (() => {
   $("btn-attach").onclick = () => $("file-pick").click();
   $("file-pick").onchange = (e) => picked(e.target);
   $("file-cam").onchange = (e) => picked(e.target);
-  $("btn-camera").onclick = () => { if (matchMedia("(pointer:coarse)").matches) $("file-cam").click(); else openLive(); };
-  $("cam-shot").onclick = () => { const v = $("cam-live"); if (v.videoWidth) { set(shrink(v, v.videoWidth, v.videoHeight)); closeLive(); $("chat-input").focus(); } };
+  $("btn-camera").onclick = () => openLive();
+  $("cam-shot").onclick = () => { const v = $("cam-live"); if (v.videoWidth) { const photo = shrink(v, v.videoWidth, v.videoHeight); closeLive(); Chat.send("Посмотри на этот снимок и помоги мне.", "text", photo); } };
   $("cam-close").onclick = closeLive;
   $("attach-x").onclick = clear;
 
-  return { get image() { return dataUrl; }, clear };
+  return { get image() { return dataUrl; }, get file() { return documentFile; }, clear };
 })();

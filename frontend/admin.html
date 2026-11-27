@@ -85,8 +85,8 @@ async function show(t){
     </div>`;}
     if(t==='users'){const u=await api('/users');v.innerHTML=`<div class="card"><table><tr><th>ID</th><th>Имя</th><th>План</th><th>Запросы</th><th>Email</th></tr>
       ${u.map(x=>`<tr><td>${x.id}</td><td>${x.name||''}</td><td>${tag(x.plan)}</td><td>${x.request_count}</td><td>${x.email||'—'}</td></tr>`).join('')}</table></div>`;}
-    if(t==='pay'){const p=await api('/payments');v.innerHTML=`<div class="card"><table><tr><th>#</th><th>User</th><th>Plan</th><th>Sum</th><th>Status</th><th></th></tr>
-      ${p.map(x=>`<tr><td>${x.id}</td><td>${x.user_name}</td><td>${x.plan}/${x.period}</td><td>${x.amount}</td><td>${tag(x.status)}</td>
+    if(t==='pay'){const p=await api('/payments');v.innerHTML=`<div class="card"><table><tr><th>#</th><th>User</th><th>Plan</th><th>Sum</th><th>Currency / method</th><th>Status</th><th></th></tr>
+      ${p.map(x=>`<tr><td>${x.id}</td><td>${x.user_name}</td><td>${x.plan}/${x.period}</td><td>${x.amount}</td><td>${x.currency||'TJS'} / ${x.method||'manual'}</td><td>${tag(x.status)}</td>
       <td>${x.status==='pending'?`<button class="ok" data-a="${x.id}">✓</button> <button class="bad" data-r="${x.id}">✗</button>`:''}</td></tr>`).join('')}</table></div>`;
       v.querySelectorAll('[data-a]').forEach(b=>b.onclick=async()=>{await api('/decide',{method:'POST',body:JSON.stringify({id:+b.dataset.a,approve:true})});show('pay');});
       v.querySelectorAll('[data-r]').forEach(b=>b.onclick=async()=>{await api('/decide',{method:'POST',body:JSON.stringify({id:+b.dataset.r,approve:false})});show('pay');});}

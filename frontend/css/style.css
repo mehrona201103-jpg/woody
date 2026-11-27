@@ -493,3 +493,17 @@ body.woody-code .code-page .wface .wbrow,body.woody-code .code-page .wface .wmou
 .grp-meta small{font-size:12px;color:#8b93a7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .grp-side{font-size:11px;color:#6b7280}
 .side-row.grp{align-items:center}
+
+/* Compact live reasoning indicator */
+.think-bub{max-width:min(78%,300px)!important;padding:8px 11px!important;border-radius:14px!important}
+.think-head{font-size:11px!important;margin-bottom:4px!important;opacity:.65}
+.think-current{font-size:13px;line-height:1.35;min-height:18px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.think-bub .typing{padding:5px 0 0!important}
+.user-suggestions{display:flex;flex-direction:column;gap:4px;max-height:180px;overflow:auto;margin-top:8px}
+.suggest-user{border:0;border-radius:10px;padding:10px 12px;text-align:left;background:var(--panel);color:var(--text)}
+.currency-row{display:flex;gap:8px;flex-wrap:wrap}
+.file-name{padding:12px;color:var(--text);font-size:13px}
+
+@media(max-width:600px){.cp-exit{padding:6px 8px;font-size:11px;border-radius:9px}.cp-hero{padding-top:0;transform:translateY(-5px)}.cp-hero .face-slot{height:min(34vw,136px)}}
+
+.unread-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:99px;background:#ef4444;color:#fff;font-size:10px;font-weight:800;margin-left:6px}

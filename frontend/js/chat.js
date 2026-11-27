@@ -54,27 +54,12 @@ const Chat = (() => {
   function typing() {
     hideEmpty();
     const row = document.createElement("div"); row.className = "msg woody thinking-row";
-    const steps = [
-      "Смотрю, что ты написал…",
-      "Достаю нужные знания…",
-      "Собираю ответ по-человечески…",
-      "Проверяю, чтобы не нести чушь…"
-    ];
-    let html = '<div class="mini-av">' + Avatars.woody() + '</div><div class="bub think-bub"><div class="think-head">Сводка</div><ul class="think-list">';
-    steps.forEach((s, i) => { html += `<li class="think-step" data-i="${i}"><span class="dot"></span><span class="txt">${s}</span></li>`; });
-    html += '</ul><div class="typing"><i></i><i></i><i></i></div></div>';
-    row.innerHTML = html;
+    const steps = ["Смотрю, что ты написал…", "Достаю нужные знания…", "Собираю ответ по-человечески…", "Проверяю ответ…"];
+    row.innerHTML = '<div class="mini-av">' + Avatars.woody() + '</div><div class="bub think-bub"><div class="think-head">Сводка</div><div class="think-current"></div><div class="typing"><i></i><i></i><i></i></div></div>';
     log.appendChild(row); toBottom();
-    // поочерёдно подсвечиваем шаги
-    let i = 0;
-    const lis = row.querySelectorAll(".think-step");
-    const tick = () => {
-      if (!row.isConnected) return;
-      lis.forEach((li, idx) => li.classList.toggle("on", idx <= i));
-      i = Math.min(i + 1, lis.length - 1);
-      row._thinkTimer = setTimeout(tick, 700 + Math.random() * 400);
-    };
-    tick();
+    let i = 0; const line = row.querySelector(".think-current"); line.textContent = steps[0];
+    const tick = () => { if (!row.isConnected) return; i = (i + 1) % steps.length; line.textContent = steps[i]; row._thinkTimer = setTimeout(tick, 1150); };
+    row._thinkTimer = setTimeout(tick, 1150);
     return row;
   }
 

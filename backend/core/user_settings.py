@@ -16,10 +16,12 @@ DEFAULTS: dict[str, bool | str] = {
     "learn_from_chats": True,
     "voice_engine": "browser",  # browser — голос браузера (временно), natural — живой голос провайдера
     "voice_name": "coral",
+    "currency": "TJS",
 }
 CHOICES: dict[str, tuple[str, ...]] = {
     "voice_engine": ("natural", "browser"),
     "voice_name": ("coral", "nova", "shimmer", "sage", "alloy", "ash", "echo", "onyx"),
+    "currency": ("TJS", "RUB", "USD"),
 }
 
 

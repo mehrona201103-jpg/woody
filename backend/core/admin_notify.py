@@ -25,6 +25,13 @@ def admin_chat_id() -> str:
     return (os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "").strip()
 
 
+def is_moderator(chat_id: str) -> bool:
+    """Только админ-чат и явно перечисленные модераторы могут выполнять команды."""
+    allowed = {admin_chat_id()} if admin_chat_id() else set()
+    allowed.update(x.strip() for x in (os.getenv("TELEGRAM_MODERATORS") or "").split(",") if x.strip())
+    return str(chat_id) in allowed
+
+
 def _api() -> str:
     return f"https://api.telegram.org/bot{bot_token()}"
 
@@ -85,7 +92,7 @@ async def notify_payment(session: Session, req: PaymentRequest, user: User) -> b
             f"🎁 Пожертвование #{req.id}\n"
             f"👤 {user.name} (id={user.id})\n"
             f"📧 {user.email or '—'}\n"
-            f"💰 {req.amount} сомони\n"
+            f"💰 {req.amount} {getattr(req, 'currency', 'TJS')}\n"
             f"💬 {(req.admin_note or '').strip() or '—'}\n\n"
             f"✅ Получено: /approve_{req.id}\n"
             f"❌ Не пришло: /reject_{req.id}"
@@ -102,7 +109,7 @@ async def notify_payment(session: Session, req: PaymentRequest, user: User) -> b
         f"👤 {user.name} (id={user.id})\n"
         f"📧 {user.email or '—'}\n"
         f"📦 Тариф: {req.plan.upper()} / {req.period}\n"
-        f"💰 {req.amount} сомони\n"
+        f"💰 {req.amount} {getattr(req, 'currency', 'TJS')}\n"
         f"⏳ status: {req.status}\n\n"
         f"✅ Одобрить: /approve_{req.id}\n"
         f"❌ Отклонить: /reject_{req.id}"
@@ -249,13 +256,12 @@ async def handle_update(db: Session, data: dict, providers_count: int = 0) -> No
         lines = []
         for r in rows:
             u = db.get(User, r.user_id)
-            lines.append(f"#{r.id} {r.plan} {r.amount} — {u.name if u else r.user_id} → /approve_{r.id} /reject_{r.id}")
+            lines.append(f"#{r.id} {r.plan} {r.amount} {getattr(r, 'currency', 'TJS')} — {u.name if u else r.user_id} → /approve_{r.id} /reject_{r.id}")
         await tg_send("sendMessage", chat_id=chat_id, text="Pending:\n" + "\n".join(lines))
         return
 
     # любое другое сообщение админу
-    if adm and chat_id == adm:
-        await tg_send("sendMessage", chat_id=chat_id, text="Не понял. /help")
+    await tg_send("sendMessage", chat_id=chat_id, text="Не понял. Используй /help.")
 
 
 async def setup_webhook(public_base: str) -> None:

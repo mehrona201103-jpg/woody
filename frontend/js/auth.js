@@ -42,6 +42,7 @@ const Auth = (() => {
     $("auth-submit").querySelector(".lbl").textContent = login ? "Войти" : "Создать аккаунт";
     $("auth-pass").autocomplete = login ? "current-password" : "new-password";
     $("auth-pass").placeholder = login ? "Твой пароль" : "Минимум 6 символов";
+    const referralField = document.querySelector(".referral-field"); if (referralField) referralField.classList.toggle("hidden", login);
     setError("");
     if (speak) bubble(login ? "С возвращением! Введи почту и пароль." : WELCOME);
   }
@@ -60,7 +61,10 @@ const Auth = (() => {
     setError(""); Voice.unlock();
     const btn = $("auth-submit"); setBusy(btn, true);
     try {
-      const res = await Api.request(mode === "login" ? "/auth/login" : "/auth/register", { method: "POST", body: JSON.stringify({ email, password: pass, name }) });
+      const ref = (new URLSearchParams(location.search).get("ref") || $("auth-referral").value || "").trim();
+      const payload = { email, password: pass, name };
+      if (mode === "register" && ref) payload.referral_code = ref;
+      const res = await Api.request(mode === "login" ? "/auth/login" : "/auth/register", { method: "POST", body: JSON.stringify(payload) });
       finish(res);
     } catch (err) { Face.flash("sad", 1200); setError(err.userMessage || "Не получилось. Попробуй ещё раз."); }
     finally { setBusy(btn, false); }
@@ -93,7 +97,8 @@ const Auth = (() => {
         });
         client.requestAccessToken({ prompt: "select_account" });
       });
-      finish(await Api.request("/auth/google", { method: "POST", body: JSON.stringify({ access_token: token }) }));
+      const ref = (new URLSearchParams(location.search).get("ref") || $("auth-referral").value || "").trim();
+      finish(await Api.request("/auth/google", { method: "POST", body: JSON.stringify({ access_token: token, referral_code: ref || null }) }));
     } catch (err) {
       if (!/popup_closed|access_denied/.test(err.message || "")) setError(err.userMessage || "Не удалось войти через Google. Попробуй ещё раз.");
     } finally { setBusy(btn, false); }
@@ -118,6 +123,7 @@ const Auth = (() => {
     $("tab-register").onclick = () => setMode("register");
     $("tab-login").onclick = () => setMode("login");
     $("auth-form").onsubmit = submit;
+    const ref = new URLSearchParams(location.search).get("ref"); if (ref && $("auth-referral")) $("auth-referral").value = ref;
     $("google-btn").onclick = google_;
     $("pw-eye").onclick = () => { const p = $("auth-pass"); p.type = p.type === "password" ? "text" : "password"; };
     Api.request("/auth/config").then((c) => { cfg = c; if (c.google_client_id) loadGsi().catch(() => {}); }).catch(() => {});
