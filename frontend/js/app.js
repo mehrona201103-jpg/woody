@@ -188,7 +188,10 @@
     Face.applyState(u.state);
     Chat.newChat(); History.refresh(); Groups.refresh();
     Auth.hide(); switchMode("chat"); $("app").classList.add("active");
-    Learn.resume(); startNotifications();
+    Learn.resume();
+    // Push lifecycle hooks may be absent when the optional notifications module is not loaded.
+    // They must never block a successful account login or app startup.
+    if (typeof startNotifications === "function") startNotifications();
     api("/status").then((st) => { if (!st.providers.length) Chat.add("woody", "AI-провайдеры не настроены. Добавь AI_PROVIDER_1_* или OPENROUTER_API_KEY в Variables на сервере — и я смогу отвечать.", true); }).catch(() => {});
   }
 
@@ -223,7 +226,8 @@
     voiceOn = false; Voice.stopConversation(); Voice.stopSpeaking(); stopCamera(); Chat.abort();
     WoodyCode.close(); WoodyCode.reset(); window.__plan = "free";
     if (callApi) { try { await api("/auth/logout", { method: "POST" }); } catch (_) { /* — */ } }
-    stopNotifications(); Api.clearSession(); closeSidebar(); $("settings").classList.remove("on");
+    if (typeof stopNotifications === "function") stopNotifications();
+    Api.clearSession(); closeSidebar(); $("settings").classList.remove("on");
     $("app").classList.remove("active"); Chat.newChat(); History.reset(); Groups.reset(); Photos.clear();
     setTimeout(() => Auth.show(), 200);
   }

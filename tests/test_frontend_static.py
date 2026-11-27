@@ -51,3 +51,9 @@ def test_intro_form_does_not_overlap_the_face():
 def test_learning_effect_and_airdrop_markup_present():
     html = (FRONT / "index.html").read_text(encoding="utf-8")
     assert 'id="learn-fx"' in html and 'id="airdrop"' in html and 'id="ad-send"' in html
+
+
+def test_optional_notification_hooks_cannot_break_login_or_logout():
+    js = (FRONT / "js" / "app.js").read_text(encoding="utf-8")
+    assert 'if (typeof startNotifications === "function") startNotifications();' in js
+    assert 'if (typeof stopNotifications === "function") stopNotifications();' in js
