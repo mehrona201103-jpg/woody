@@ -91,8 +91,11 @@ class AIRouter:
 
     def candidates(self, task: str) -> list[AIProvider]:
         specific = [p for p in self.providers if task in p.tasks]
-        if specific or task != "conversation":
+        if specific:
             return specific
+        # Vision-capable модели часто ошибочно не помечены TASKS=vision в .env.
+        # Пробуем настроенные провайдеры как резерв: несовместимая модель вернёт
+        # обычную ошибку API, после чего маршрутизатор продолжит следующий вариант.
         return list(self.providers)
 
     async def complete_all(self, messages: list[dict[str, str]], task: str = "conversation", **opts) -> list[tuple[str, str]]:

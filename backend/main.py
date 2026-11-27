@@ -28,7 +28,7 @@ from backend.core.billing import PLANS, FREE_LIMIT, PRICES, CURRENCY, RESET_HOUR
 from backend.core import codegen, agent as code_agent
 from backend.core.admin_notify import notify_feedback, notify_payment, decide_payment, handle_update, setup_webhook, bot_token
 from backend.core import admin_panel
-from backend.database.models import Feedback, PaymentRequest, Referral, GroupRead, PushSubscription
+from backend.database.models import Feedback, PaymentRequest, Referral, GroupRead, PushSubscription, TelegramBinding, UserAdminState
 from backend.core.identity import IdentityService
 from backend.core.learning import LearningService
 from backend.core.mind import Mind
@@ -128,9 +128,12 @@ def get_user_optional(
     return find_user_by_secret(db, x_woody_session)
 
 
-def require_user(user: User | None = Depends(get_user_optional)) -> User:
+def require_user(user: User | None = Depends(get_user_optional), db: Session = Depends(get_db)) -> User:
     if user is None:
         raise HTTPException(403, {"code": "not_registered", "message": "Сначала нужно познакомиться."})
+    state = db.scalar(select(UserAdminState).where(UserAdminState.user_id == user.id))
+    if state and state.blocked:
+        raise HTTPException(403, {"code": "account_blocked", "message": "Доступ к аккаунту временно ограничен администратором."})
     return user
 
 
@@ -344,7 +347,7 @@ def health() -> dict[str, object]:
 
 @app.get("/api/version")
 def app_version() -> dict[str, str]:
-    return {"version": "0.7.4", "build": "2026-11-26c"}
+    return {"version": "0.7.5", "build": "2026-11-27a"}
 
 
 # ------------------------------------------------------------------ веб-админка
@@ -365,8 +368,55 @@ def admin_panel_stats(request: Request, db: Session = Depends(get_db)) -> dict:
 @app.get("/api/admin/panel/users")
 def admin_panel_users(request: Request, db: Session = Depends(get_db)) -> list:
     _admin_auth(request)
-    return admin_panel.list_users(db)
+    rows = admin_panel.list_users(db)
+    for row in rows:
+        state = db.scalar(select(UserAdminState).where(UserAdminState.user_id == row["id"]))
+        tg = db.scalar(select(TelegramBinding).where(TelegramBinding.user_id == row["id"]))
+        row.update({"blocked":bool(state.blocked) if state else False,"plan_access":bool(state.plan_access) if state else True,
+                    "telegram_username":tg.username if tg else None,"telegram_phone":tg.phone if tg else None})
+    return rows
 
+
+@app.get("/api/admin/panel/users/{user_id}")
+def admin_panel_user_detail(user_id: int, request: Request, db: Session = Depends(get_db)) -> dict:
+    _admin_auth(request)
+    u = db.get(User, user_id)
+    if not u: raise HTTPException(404, "Пользователь не найден")
+    state = db.scalar(select(UserAdminState).where(UserAdminState.user_id == user_id))
+    tg = db.scalar(select(TelegramBinding).where(TelegramBinding.user_id == user_id))
+    return {"id":u.id,"name":u.name,"email":u.email,"plan":u.plan,"plan_until":u.plan_until.isoformat() if u.plan_until else None,
+            "blocked":bool(state.blocked) if state else False,"plan_access":bool(state.plan_access) if state else True,
+            "telegram_username":tg.username if tg else None,"telegram_phone":tg.phone if tg else None,"telegram_id":tg.telegram_id if tg else None}
+
+@app.post("/api/admin/panel/users/{user_id}/action")
+async def admin_panel_user_action(user_id: int, request: Request, db: Session = Depends(get_db)) -> dict:
+    _admin_auth(request); body = await request.json(); action = str(body.get("action") or "")
+    u = db.get(User, user_id)
+    if not u: raise HTTPException(404, "Пользователь не найден")
+    state = db.scalar(select(UserAdminState).where(UserAdminState.user_id == user_id))
+    if state is None: state = UserAdminState(user_id=user_id); db.add(state)
+    if action == "block": state.blocked = True
+    elif action == "unblock": state.blocked = False
+    elif action == "revoke_plan": state.plan_access = False; u.plan = "free"; u.plan_until = None
+    elif action == "grant_plan":
+        state.plan_access = True
+        plan = str(body.get("plan") or "pro")
+        if plan not in ("pro", "ultra"): raise HTTPException(400, "Неверный тариф")
+        from backend.core.billing import activate_plan
+        activate_plan(db, u, plan, str(body.get("period") or "month"))
+    elif action == "message":
+        tg = db.scalar(select(TelegramBinding).where(TelegramBinding.user_id == user_id))
+        msg = str(body.get("text") or "").strip()
+        if not tg: raise HTTPException(409, "Telegram не привязан")
+        if not msg or len(msg) > 4000: raise HTTPException(400, "Сообщение пустое или слишком длинное")
+        token = bot_token()
+        if not token: raise HTTPException(503, "Telegram-бот не настроен")
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":tg.telegram_id,"text":msg})
+            if r.status_code >= 400: raise HTTPException(502, "Telegram не доставил сообщение")
+    else: raise HTTPException(400, "Неизвестное действие")
+    db.commit()
+    return {"ok":True,"blocked":state.blocked,"plan_access":state.plan_access,"plan":u.plan}
 
 @app.get("/api/admin/panel/payments")
 def admin_panel_payments(request: Request, plan: str | None = None, db: Session = Depends(get_db)) -> list:
@@ -402,6 +452,34 @@ async def admin_panel_decide(request: Request, db: Session = Depends(get_db)) ->
 
 
 
+# ------------------------------------------------------------------ привязка Telegram пользователя
+@app.post("/api/telegram/link")
+async def telegram_link_create(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    import secrets
+    token = bot_token()
+    if not token: raise HTTPException(503, {"code":"telegram_unconfigured","message":"Telegram-бот пока не настроен."})
+    me = await _telegram_bot_info(token)
+    username = me.get("username")
+    if not username: raise HTTPException(503, "У бота не задан username")
+    old = db.scalar(select(TelegramBinding).where(TelegramBinding.user_id == user.id))
+    if old and old.telegram_id: return {"linked":True,"username":old.username}
+    code = secrets.token_urlsafe(24)
+    row = old or TelegramBinding(user_id=user.id, telegram_id="pending-"+str(user.id))
+    row.link_code = code; row.expires_at = datetime.utcnow() + timedelta(minutes=10)
+    db.add(row); db.commit()
+    return {"linked":False,"url":f"https://t.me/{username}?start=link_{code}","expires_in":600}
+
+@app.get("/api/telegram/link")
+def telegram_link_status(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    row = db.scalar(select(TelegramBinding).where(TelegramBinding.user_id == user.id))
+    return {"linked":bool(row and not row.telegram_id.startswith("pending-")),"username":row.username if row else None,"phone":row.phone if row else None}
+
+async def _telegram_bot_info(token: str) -> dict:
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(f"https://api.telegram.org/bot{token}/getMe"); r.raise_for_status(); data=r.json()
+    if not data.get("ok"): raise RuntimeError("Telegram getMe failed")
+    return data.get("result") or {}
+
 # ------------------------------------------------------------------ тарифы / оплата
 @app.get("/api/plans")
 def api_plans(user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
@@ -433,6 +511,38 @@ async def api_payment(body: PaymentBody, user: User = Depends(require_user), db:
               "RUB": {"pro": {"month":"199","year":"399"},"ultra":{"month":"399","year":"599"}},
               "USD": {"pro": {"month":"0.99","year":"1.99"},"ultra":{"month":"1.99","year":"3.99"}}}
     amount = prices[currency][plan][period]
+    # Telegram Stars — автоматическая оплата для RUB. Суммы задаются в целых XTR
+    # через переменные окружения; валюта XTR не конвертируется из RUB автоматически.
+    if currency == "RUB":
+        token = (os.getenv("TELEGRAM_ADMIN_BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        if not token:
+            raise HTTPException(503, {"code":"telegram_stars_unconfigured", "message":"Добавь TELEGRAM_ADMIN_BOT_TOKEN в настройки сервера."})
+        env_key = f"TELEGRAM_STARS_{plan.upper()}_{period.upper()}"
+        try:
+            stars = int(os.getenv(env_key, "0"))
+        except ValueError:
+            stars = 0
+        if stars <= 0:
+            raise HTTPException(503, {"code":"telegram_stars_price_unconfigured", "message":f"Администратору нужно задать {env_key} — цену в целых Telegram Stars (XTR)."})
+        req = PaymentRequest(user_id=user.id, plan=plan, period=period, amount=str(stars), currency="XTR", method="telegram_stars", status="pending")
+        db.add(req); db.commit(); db.refresh(req)
+        invoice_payload = f"woody:{req.id}:{user.id}"
+        async with httpx.AsyncClient(timeout=25) as client:
+            response = await client.post(f"https://api.telegram.org/bot{token}/createInvoiceLink", json={
+                "title": f"Woody {plan.upper()} — {period}",
+                "description": f"Подписка Woody {plan.upper()} на {'год' if period == 'year' else 'месяц'}",
+                "payload": invoice_payload,
+                "provider_token": "",
+                "currency": "XTR",
+                "prices": [{"label": f"Woody {plan.upper()}", "amount": stars}],
+            })
+            result = response.json()
+        if not result.get("ok") or not result.get("result"):
+            req.status = "failed"; db.add(req); db.commit()
+            logger.error("Telegram Stars invoice link failed: %s", result)
+            raise HTTPException(502, {"code":"telegram_stars_invoice", "message":"Telegram не смог создать счёт Stars. Попробуй позже."})
+        req.external_id = invoice_payload; db.add(req); db.commit()
+        return {"method":"telegram_stars", "url":result["result"], "request_id":req.id, "stars":stars, "currency":"XTR", "message":"Счёт Telegram Stars создан. После подтверждения Telegram тариф активируется автоматически."}
     if currency == "USD":
         token = os.getenv("CRYPTO_PAY_API_TOKEN", "").strip()
         if not token:
@@ -562,6 +672,12 @@ async def admin_setup_webhook() -> dict:
     return await admin_bot_status()
 
 
+async def _telegram_send(token: str, chat_id: str, text: str, reply_markup: dict | None = None) -> None:
+    if not token or not chat_id: return
+    async with httpx.AsyncClient(timeout=10) as client:
+        await client.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id":chat_id,"text":text, **({"reply_markup":reply_markup} if reply_markup else {})})
+
+
 @app.post("/api/admin/telegram")
 async def admin_telegram_webhook(request: Request, db: Session = Depends(get_db)) -> dict:
     """Webhook Telegram-бота (админ)."""
@@ -574,7 +690,53 @@ async def admin_telegram_webhook(request: Request, db: Session = Depends(get_db)
     except Exception:
         return {"ok": True}
     try:
-        await handle_update(db, data, providers_count=len(router.status()))
+        # Telegram Stars: pre-checkout must be answered quickly; successful_payment
+        # is the authoritative confirmation (never trust a client redirect).
+        pre = data.get("pre_checkout_query") or {}
+        if pre:
+            payload = str(pre.get("invoice_payload") or "")
+            row = db.scalar(select(PaymentRequest).where(PaymentRequest.external_id == payload, PaymentRequest.method == "telegram_stars"))
+            valid = bool(row and row.status == "pending" and int(pre.get("total_amount") or 0) == int(row.amount) and pre.get("currency") == "XTR")
+            token = bot_token()
+            if token:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.post(f"https://api.telegram.org/bot{token}/answerPreCheckoutQuery", json={"pre_checkout_query_id":pre.get("id"), "ok":valid, **({} if valid else {"error_message":"Счёт недействителен или уже обработан."})})
+        msg = data.get("message") or {}
+        paid = msg.get("successful_payment") or {}
+        if paid:
+            payload = str(paid.get("invoice_payload") or "")
+            row = db.scalar(select(PaymentRequest).where(PaymentRequest.external_id == payload, PaymentRequest.method == "telegram_stars"))
+            if row and row.status == "pending" and paid.get("currency") == "XTR" and int(paid.get("total_amount") or 0) == int(row.amount):
+                buyer = db.get(User, row.user_id)
+                if buyer:
+                    from backend.core.billing import activate_plan
+                    row.status = "approved"
+                    row.external_id = str(paid.get("telegram_payment_charge_id") or payload)
+                    row.decided_at = datetime.utcnow()
+                    db.add(row); db.commit()
+                    activate_plan(db, buyer, row.plan, row.period)
+        if not paid:
+            # Персональная привязка через одноразовый deep-link. Telegram ID берём только из update,
+            # номер — только из contact, отправленного самим владельцем аккаунта.
+            message = data.get("message") or {}
+            tg_user = message.get("from") or {}
+            chat_id = str((message.get("chat") or {}).get("id") or "")
+            text_in = str(message.get("text") or "")
+            if text_in.startswith("/start link_") and tg_user.get("id"):
+                code = text_in.split("link_",1)[1].strip()
+                link = db.scalar(select(TelegramBinding).where(TelegramBinding.link_code == code))
+                if link and link.expires_at and link.expires_at >= datetime.utcnow():
+                    link.telegram_id=str(tg_user["id"]); link.username=tg_user.get("username"); link.first_name=tg_user.get("first_name"); link.link_code=None; link.expires_at=None
+                    db.commit()
+                    await _telegram_send(token=bot_token(), chat_id=chat_id, text="Telegram успешно привязан к Woody! Если хочешь, отправь свой номер кнопкой ниже — он будет виден администратору.", reply_markup={"keyboard":[[{"text":"Поделиться номером телефона","request_contact":True}]],"resize_keyboard":True,"one_time_keyboard":True})
+                else:
+                    await _telegram_send(token=bot_token(), chat_id=chat_id, text="Ссылка устарела. Создай новую привязку в настройках Woody.")
+                return {"ok":True}
+            if message.get("contact") and tg_user.get("id") and str(message["contact"].get("user_id")) == str(tg_user.get("id")):
+                link = db.scalar(select(TelegramBinding).where(TelegramBinding.telegram_id == str(tg_user["id"])))
+                if link:
+                    link.phone=message["contact"].get("phone_number"); db.commit()
+            await handle_update(db, data, providers_count=len(router.status()))
     except Exception as exc:
         logger.exception("admin telegram: %s", exc)
     return {"ok": True}
@@ -1260,6 +1422,43 @@ def learn_stop(user: User = Depends(require_user)) -> dict:
     LEARNER.stop()
     return LEARNER.status()
 
+
+# ------------------------------------------------------------------ диктант (Pro): запись только по явному нажатию и отправка после остановки
+@app.post("/api/dictation/transcribe")
+async def dictation_transcribe(file: UploadFile = File(...), user: User = Depends(require_user), db: Session = Depends(get_db)) -> dict:
+    if effective_plan(user) not in ("pro", "ultra"):
+        raise HTTPException(403, {"code":"pro_required","message":"Распознавание диктанта доступно только в Pro и Ultra."})
+    raw = await file.read()
+    if not raw or len(raw) > 24 * 1024 * 1024:
+        raise HTTPException(413, "Аудио пустое или превышает 24 МБ")
+    targets = []
+    stt_key = (os.getenv("OPENAI_STT_API_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    if stt_key:
+        targets.append(((os.getenv("OPENAI_STT_BASE_URL") or "https://api.openai.com/v1").rstrip("/"), stt_key, os.getenv("WOODY_STT_MODEL", "whisper-1")))
+    for provider in router.providers:
+        cfg = getattr(provider, "cfg", None)
+        if cfg and cfg.api_key and cfg.base_url:
+            if not any(t[0] == cfg.base_url and t[1] == cfg.api_key for t in targets):
+                targets.append((cfg.base_url, cfg.api_key, cfg.model))
+    transcript = None; last_error = None
+    for base, key, model in targets:
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                response = await client.post(f"{base}/audio/transcriptions", headers={"Authorization":f"Bearer {key}"},
+                    data={"model":os.getenv("WOODY_STT_MODEL", "whisper-1"),"response_format":"json"},
+                    files={"file":(file.filename or "dictation.webm", raw, file.content_type or "audio/webm")})
+            response.raise_for_status(); transcript = str(response.json().get("text") or "").strip()
+            if transcript: break
+        except Exception as exc: last_error = type(exc).__name__; logger.warning("dictation STT provider failed: %s", last_error)
+    if not transcript:
+        raise HTTPException(503, {"code":"stt_unavailable","message":"Сервис распознавания аудио не настроен или недоступен. Нужен совместимый /audio/transcriptions endpoint."})
+    prompt = [{"role":"system","content":"Ты редактор диктанта. Исправь только орфографию, пунктуацию и очевидные ошибки распознавания, сохрани язык и смысл исходного текста. Верни строго JSON: {\"corrected\":\"...\",\"changes\":[{\"before\":\"...\",\"after\":\"...\",\"reason\":\"...\"}],\"language\":\"...\"}. Не переводи текст."}, {"role":"user","content":transcript}]
+    try:
+        fixed, _ = await router.complete(prompt, task="conversation", temperature=0.1)
+        match = re.search(r"\{[\s\S]*\}", fixed); data = json.loads(match.group(0)) if match else {}
+    except Exception:
+        data = {"corrected":transcript,"changes":[],"language":"auto"}
+    return {"original":transcript,"corrected":str(data.get("corrected") or transcript),"changes":data.get("changes") if isinstance(data.get("changes"),list) else [],"language":data.get("language") or "auto"}
 
 # ------------------------------------------------------------------ голос (человеческий) и зрение
 def _tts_target() -> tuple[str, str] | None:

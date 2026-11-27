@@ -69,11 +69,13 @@ const Groups = (() => {
       col.append(title, prev);
       const meta = document.createElement("span"); meta.className = "grp-side";
       if (g.members) { const c = document.createElement("em"); c.textContent = g.members + " уч."; meta.append(c); }
+      if (g.unread_count) { const badge = document.createElement("span"); badge.className = "unread-badge"; badge.textContent = g.unread_count > 99 ? "99+" : String(g.unread_count); meta.append(badge); }
       b.append(av, col, meta);
       b.onclick = () => open(g.id); box.append(b);
     }
   }
-  async function refresh() { try { list = await api("/groups"); renderList(); } catch (_) { /* — */ } }
+  async function refresh() { try { const [groups, notices] = await Promise.all([api("/groups"), api("/notifications")]); list = groups.map(g => ({...g, unread_count:(notices.groups.find(n => n.group_id === g.id)||{}).count||0})); const badge=$("group-unread"); if(badge){badge.textContent=notices.unread>99?"99+":String(notices.unread||"");badge.classList.toggle("hidden",!notices.unread);} renderList(); } catch (_) { /* — */ } }
+  setInterval(() => { if (!document.hidden) refresh(); }, 7000);
 
   async function create() {
     let made = null;
@@ -126,7 +128,7 @@ const Groups = (() => {
       const info = await api(`/groups/${id}`); cur = { id, name: info.name }; me = info.me; renderHeader(info);
       for (const m of await api(`/groups/${id}/messages`)) addMsg(m);
     } catch (e) { console.error("[Woody group]", e); return; }
-    renderList(); if (hooks.show) hooks.show(); bottom(false);
+    renderList(); if (hooks.show) hooks.show(); bottom(false); refresh();
     ticks = 0; timer = setInterval(poll, 3000);
   }
   async function poll() {

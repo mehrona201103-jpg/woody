@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from backend.core.billing import activate_plan
-from backend.database.models import Feedback, PaymentRequest, User
+from backend.database.models import Feedback, PaymentRequest, User, TelegramBinding, UserAdminState
 
 logger = logging.getLogger("woody.admin")
 
@@ -241,9 +241,33 @@ async def handle_update(db: Session, data: dict, providers_count: int = 0) -> No
         return
 
     if text.startswith("/users"):
-        rows = db.scalars(select(User).order_by(User.id.desc()).limit(40)).all()
-        lines = [f"{u.id}. {u.name} | {u.plan or 'free'} | req={u.request_count or 0}" for u in rows] or ["пусто"]
-        await tg_send("sendMessage", chat_id=chat_id, text="Users:\n" + "\n".join(lines))
+        rows = db.scalars(select(User).order_by(User.id.desc()).limit(18)).all()
+        lines = []
+        for u in rows:
+            state = db.scalar(select(UserAdminState).where(UserAdminState.user_id == u.id))
+            tg = db.scalar(select(TelegramBinding).where(TelegramBinding.user_id == u.id))
+            status = "BLOCKED" if state and state.blocked else "active"
+            contact = ("@" + tg.username) if tg and tg.username else (tg.phone if tg and tg.phone else "TG—")
+            lines.append(f"{u.id}. {u.name} | {u.email or 'нет почты'} | {u.plan or 'free'} | {status} | {contact}\n/block_{u.id} /unblock_{u.id} /pro_{u.id} /free_{u.id}")
+        await tg_send("sendMessage", chat_id=chat_id, text="Пользователи (последние 18):\n\n" + ("\n\n".join(lines) or "пусто"))
+        return
+
+    action_match = re.fullmatch(r"/(block|unblock|pro|free)_(\d+)", text)
+    if action_match:
+        action, uid = action_match.group(1), int(action_match.group(2))
+        target = db.get(User, uid)
+        if not target:
+            await tg_send("sendMessage", chat_id=chat_id, text="Пользователь не найден."); return
+        state = db.scalar(select(UserAdminState).where(UserAdminState.user_id == uid))
+        if state is None: state = UserAdminState(user_id=uid); db.add(state)
+        if action == "block": state.blocked = True
+        elif action == "unblock": state.blocked = False
+        elif action == "pro":
+            state.plan_access = True; activate_plan(db, target, "pro", "month")
+        elif action == "free":
+            state.plan_access = False; target.plan = "free"; target.plan_until = None
+        db.commit()
+        await tg_send("sendMessage", chat_id=chat_id, text=f"Готово: {target.name} — {action}.")
         return
 
     if text.startswith("/pending"):
@@ -271,7 +295,7 @@ async def setup_webhook(public_base: str) -> None:
         return
     url = public_base.rstrip("/") + "/api/admin/telegram"
     secret = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
-    payload = {"url": url, "allowed_updates": ["message"]}
+    payload = {"url": url, "allowed_updates": ["message", "pre_checkout_query"]}
     if secret:
         payload["secret_token"] = secret
     try:

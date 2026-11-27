@@ -70,6 +70,10 @@ if(key()){api('/stats').then(()=>{$('login').classList.add('hidden');$('app').cl
 document.querySelectorAll('#tabs button').forEach(b=>b.onclick=()=>{
   document.querySelectorAll('#tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');show(b.dataset.t);
 });
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function openUser(id){const d=await api('/users/'+id);const box=$('user-detail');box.innerHTML=`<div class="card"><h2>${esc(d.name)} · #${d.id}</h2><p>Email: ${esc(d.email||'—')}</p><p>Тариф: ${esc(d.plan)} · до ${esc(d.plan_until||'—')}</p><p>Telegram: ${esc(d.telegram_username?'@'+d.telegram_username:(d.telegram_phone||'не привязан'))}</p><div class="row"><button data-action="grant_plan">Выдать Pro</button><button data-action="revoke_plan" class="ghost">Снять доступ к тарифу</button><button data-action="${d.blocked?'unblock':'block'}" class="${d.blocked?'ok':'bad'}">${d.blocked?'Разблокировать':'Заблокировать'}</button><button data-action="message" class="ghost">Написать в Telegram</button></div></div>`;
+box.querySelectorAll('[data-action]').forEach(b=>b.onclick=async()=>{const a=b.dataset.action;if(a==='message'){const text=prompt('Сообщение пользователю:');if(!text)return;await api('/users/'+id+'/action',{method:'POST',body:JSON.stringify({action:a,text})});alert('Сообщение отправлено');return;}const payload={action:a};if(a==='grant_plan')payload.plan='pro';await api('/users/'+id+'/action',{method:'POST',body:JSON.stringify(payload)});await openUser(id);});}
+
 async function show(t){
   const v=$('view');v.innerHTML='Загрузка…';
   try{
@@ -83,8 +87,9 @@ async function show(t){
       <div class="stat"><b>${s.feedback}</b><span>Ideas</span></div>
       <div class="stat"><b>${s.total_requests}</b><span>Requests</span></div>
     </div>`;}
-    if(t==='users'){const u=await api('/users');v.innerHTML=`<div class="card"><table><tr><th>ID</th><th>Имя</th><th>План</th><th>Запросы</th><th>Email</th></tr>
-      ${u.map(x=>`<tr><td>${x.id}</td><td>${x.name||''}</td><td>${tag(x.plan)}</td><td>${x.request_count}</td><td>${x.email||'—'}</td></tr>`).join('')}</table></div>`;}
+    if(t==='users'){const u=await api('/users');v.innerHTML=`<div class="card"><table><tr><th>ID</th><th>Имя</th><th>План</th><th>Статус</th><th>Email</th><th>Telegram</th><th></th></tr>
+      ${u.map(x=>`<tr><td>${x.id}</td><td>${esc(x.name||'')}</td><td>${tag(x.plan)}</td><td>${x.blocked?tag('blocked','rejected'):'Активен'}</td><td>${esc(x.email||'—')}</td><td>${esc(x.telegram_username?'@'+x.telegram_username:(x.telegram_phone||'—'))}</td><td><button class="ghost" data-user="${x.id}">Открыть</button></td></tr>`).join('')}</table></div><div id="user-detail"></div>`;
+      v.querySelectorAll('[data-user]').forEach(b=>b.onclick=()=>openUser(+b.dataset.user));}
     if(t==='pay'){const p=await api('/payments');v.innerHTML=`<div class="card"><table><tr><th>#</th><th>User</th><th>Plan</th><th>Sum</th><th>Currency / method</th><th>Status</th><th></th></tr>
       ${p.map(x=>`<tr><td>${x.id}</td><td>${x.user_name}</td><td>${x.plan}/${x.period}</td><td>${x.amount}</td><td>${x.currency||'TJS'} / ${x.method||'manual'}</td><td>${tag(x.status)}</td>
       <td>${x.status==='pending'?`<button class="ok" data-a="${x.id}">✓</button> <button class="bad" data-r="${x.id}">✗</button>`:''}</td></tr>`).join('')}</table></div>`;

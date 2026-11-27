@@ -5,6 +5,7 @@
   const DEFAULTS = { memory_enabled: true, camera_enabled: true, microphone_enabled: true, hand_tracking_enabled: true, transfer_enabled: true, voice_replies: true, always_on_camera: true, learn_from_chats: true, voice_engine: "browser", voice_name: "coral" };
   let settings = { ...DEFAULTS }, user = { name: "", email: "" };
   let mode = "chat", voiceOn = false, micMuted = false, transferBusy = false, lastWave = 0;
+  let voiceFinalTimer = 0, pendingVoiceText = "";
 
   // «переключись на чат» / «давай на голосовой режим» — по тексту и по голосу (в JS \b не работает с кириллицей)
   const TO_CHAT = /(переключ|перейд|перейти|давай|включи|открой|верн)[а-яё]*\s.{0,30}(чат|текст|переписк)/i;
@@ -41,8 +42,14 @@
     startCamera("auto");
     try {
       await Voice.startConversation({
-        onInterim: (t) => caption(t),
-        onFinal: onHeard,
+        onInterim: (t) => { clearTimeout(voiceFinalTimer); pendingVoiceText = ""; caption(t); },
+        // Дожидаемся двух секунд тишины после последнего распознанного фрагмента.
+        // Если пользователь продолжил говорить, следующий фрагмент отменит ответ.
+        onFinal: (t) => {
+          pendingVoiceText = [pendingVoiceText, t].filter(Boolean).join(" ").trim();
+          clearTimeout(voiceFinalTimer);
+          voiceFinalTimer = setTimeout(() => { const finalText = pendingVoiceText; pendingVoiceText = ""; if (finalText) onHeard(finalText); }, 2000);
+        },
         onListening: (on) => { ui(on); if (on && !Chat.busy) { Face.setActivity("listening"); Chat.setStatus("Слушаю…"); } },
         onError: (code) => { caption(code === "nomic" ? "Микрофон не найден. Можно писать в чат." : "Нет доступа к микрофону. Разреши его в настройках сайта."); $("v-mic").classList.remove("on"); },
       });
@@ -52,7 +59,7 @@
 
   async function exitVoice() {
     if (!voiceOn && mode !== "voice") return;
-    voiceOn = false; Voice.stopConversation(); Voice.stopSpeaking(); Chat.abort(); stopCamera();
+    voiceOn = false; clearTimeout(voiceFinalTimer); pendingVoiceText = ""; Voice.stopConversation(); Voice.stopSpeaking(); Chat.abort(); stopCamera();
     ui(false); Face.setActivity("idle"); Chat.setStatus(""); caption("");
     switchMode("chat");
   }
@@ -174,6 +181,7 @@
     $("nav-code").classList.toggle("locked", window.__plan !== "ultra");
     if (!paid) { $("modes-menu").classList.add("hidden"); localStorage.removeItem("woody_pro_mode"); }
     renderModesMenu();
+    if (typeof syncDictationButton === "function") syncDictationButton();
   }
 
   async function loadSession() {
@@ -289,6 +297,12 @@
       body.append(h("div", { className: "row" }, h("span", { textContent: "Имя" }), nameIn));
       if (user.email) body.append(h("div", { className: "row" }, h("span", { textContent: "Почта" }), h("small", { textContent: user.email })));
       body.append(h("div", { className: "row" }, h("span", { textContent: "Тариф" }), h("b", { textContent: plan.toUpperCase() })));
+      body.append(section("Привязка Telegram"));
+      const tgStatus = h("p", { className:"note", textContent:"Проверяем привязку…" });
+      const tgBtn = h("button", { className:"btn3d wide", textContent:"Привязать Telegram" });
+      tgBtn.onclick = async () => { tgBtn.disabled=true; try { const r=await api("/telegram/link",{method:"POST"}); if(r.linked){tgStatus.textContent="Telegram уже привязан.";} else { window.open(r.url,"_blank","noopener"); tgStatus.textContent="Нажми Start в боте. После подтверждения привязка появится здесь."; const check=async()=>{const st=await api("/telegram/link");if(st.linked){tgStatus.textContent="Telegram привязан: @"+(st.username||"");tgBtn.textContent="Привязан";tgBtn.disabled=true;return;}setTimeout(check,3000);};setTimeout(check,2500);} } catch(e){tgStatus.textContent=e.userMessage||e.message||"Не удалось создать ссылку.";tgBtn.disabled=false;} };
+      body.append(tgStatus,tgBtn);
+      api("/telegram/link").then(st=>{if(st.linked){tgStatus.textContent="Telegram привязан: @"+(st.username||"");tgBtn.textContent="Привязан";tgBtn.disabled=true;}else tgStatus.textContent="Telegram не привязан.";}).catch(()=>{tgStatus.textContent="Telegram-бот пока не настроен.";});
       const left = usage.remaining == null ? "∞" : String(usage.remaining);
       body.append(h("div", { className: "row" }, h("span", { textContent: "Запросы" }), h("small", { textContent: `${usage.used || 0} / ${usage.limit == null ? "∞" : usage.limit} (осталось ${left})` })));
 
@@ -300,7 +314,7 @@
         b.onclick = async () => { try { await save({ currency: code }); await refreshPlan(); renderSettings(); } catch (e) { Chat.add("woody", e.userMessage || "Не удалось сменить валюту.", true); } };
         currencyRow.append(b);
       }
-      body.append(currencyRow, note("Сомони — перевод и ручная проверка; рубли — Telegram и проверка заявки; доллары — Crypto Bot с автоматическим подтверждением."));
+      body.append(currencyRow, note("Сомони — перевод и ручная проверка; при выборе рублей оплата автоматически проходит через Telegram Stars; доллары — Crypto Bot с автоматическим подтверждением."));
 
       // --- Голос
       body.append(section("Голос"));
@@ -498,15 +512,15 @@
     const prices = window.__planData && window.__planData.prices ? window.__planData.prices : PRICE;
     $("pay-amount").textContent = `${prices[plan][payPeriod]} ${symbols[currency] || currency} / ${payPeriod === "year" ? "год" : "месяц"}`;
     const info = window.__payInfo || {};
-    $("pay-req").textContent = currency === "USD" ? "Оплата будет создана через Crypto Bot. После успешной оплаты тариф включится автоматически." : [info.holder, info.requisites].filter(Boolean).join("\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
+    $("pay-req").textContent = currency === "USD" ? "Оплата будет создана через Crypto Bot. После успешной оплаты тариф включится автоматически." : currency === "RUB" ? "Оплата пройдёт автоматически через Telegram Stars. Откроется счёт Telegram; после успешной оплаты Pro включится автоматически." : [info.holder, info.requisites].filter(Boolean).join("\n") || "Реквизиты появятся после настройки PAYMENT_REQUISITES на сервере.";
     $("pay-preview").classList.add("hidden");
     $("pay-preview").innerHTML = "";
     $("pay-err").textContent = "";
-    $("pay-send").disabled = currency === "USD";
-    $("pay-pick").classList.toggle("hidden", currency === "USD");
+    $("pay-send").disabled = false;
+    $("pay-pick").classList.toggle("hidden", currency === "USD" || currency === "RUB");
     const paySteps = $("pay-modal").querySelector(".modal-box > .note");
-    if (paySteps) paySteps.textContent = currency === "USD" ? "Нажми «Перейти к оплате» — откроется счёт Crypto Bot. После оплаты тариф активируется автоматически." : "1) Переведи сумму 2) Загрузи скрин чека 3) Отправь заявку — админ проверит";
-    $("pay-send").textContent = currency === "USD" ? "Перейти к оплате" : "Отправить чек на проверку";
+    if (paySteps) paySteps.textContent = currency === "USD" ? "Нажми «Перейти к оплате» — откроется счёт Crypto Bot. После оплаты тариф активируется автоматически." : currency === "RUB" ? "Нажми «Оплатить в Telegram Stars». Telegram подтвердит платёж, и тариф включится автоматически." : "1) Переведи сумму 2) Загрузи скрин чека 3) Отправь заявку — админ проверит";
+    $("pay-send").textContent = currency === "USD" || currency === "RUB" ? "Оплатить" : "Отправить чек на проверку";
     $("pay-modal").classList.remove("hidden");
   }
   $("pay-cancel").onclick = () => $("pay-modal").classList.add("hidden");
@@ -532,14 +546,14 @@
   $("pay-send").onclick = async () => {
     $("pay-err").textContent = "";
     const currency = (window.__planData && window.__planData.currency) || settings.currency || "TJS";
-    if (currency !== "USD" && (!payReceipt || !payReceipt.startsWith("data:image"))) {
+    if (currency !== "USD" && currency !== "RUB" && (!payReceipt || !payReceipt.startsWith("data:image"))) {
       $("pay-err").textContent = "Сначала загрузи скрин чека";
       return;
     }
     $("pay-send").disabled = true;
     $("pay-err").textContent = "Отправляю заявку…";
     try {
-      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPeriod, receipt: payReceipt, currency, method: currency === "USD" ? "crypto" : "manual" }) });
+      const res = await api("/payments", { method: "POST", body: JSON.stringify({ plan: payPlan, period: payPeriod, receipt: payReceipt, currency, method: currency === "USD" ? "crypto" : currency === "RUB" ? "telegram_stars" : "manual" }) });
       $("pay-modal").classList.add("hidden");
       $("pay-err").textContent = "";
       Chat.add("woody", res.message || "Заявка отправлена. Админ проверит оплату.");
@@ -632,6 +646,43 @@
     item("Свой характер…", false, () => { $("pro-persona-ta").value = localStorage.getItem("woody_pro_persona") || ""; $("pro-modes-modal").classList.remove("hidden"); }, "persona");
     $("btn-modes").classList.toggle("on", cur !== "default");
   }
+  // Pro: запись диктанта. Микрофон активен только между явными Start/Stop.
+  let dictationStream = null, dictationRecorder = null, dictationChunks = [];
+  const dictationBtn = $("btn-dictation");
+  function syncDictationButton() {
+    const paid = !!(window.__planData && ["pro", "ultra"].includes(window.__planData.current || window.__planData.plan));
+    const study = (localStorage.getItem("woody_pro_mode") || "default") === "study";
+    dictationBtn.classList.toggle("hidden", !(paid && study));
+  }
+  dictationBtn.onclick = async () => {
+    if (dictationRecorder && dictationRecorder.state === "recording") {
+      dictationRecorder.stop(); dictationBtn.textContent = "Обработка…"; dictationBtn.disabled = true; return;
+    }
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error("Запись аудио не поддерживается этим браузером.");
+      dictationStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      dictationChunks = [];
+      const mime = ["audio/webm;codecs=opus","audio/webm","audio/mp4"].find(x => MediaRecorder.isTypeSupported(x));
+      dictationRecorder = new MediaRecorder(dictationStream, mime ? {mimeType:mime} : undefined);
+      dictationRecorder.ondataavailable = e => { if (e.data && e.data.size) dictationChunks.push(e.data); };
+      dictationRecorder.onstop = async () => {
+        try {
+          const blob = new Blob(dictationChunks, {type:dictationRecorder.mimeType || "audio/webm"});
+          if (!blob.size) throw new Error("Запись пустая.");
+          const fd = new FormData(); fd.append("file", blob, "dictation.webm");
+          const result = await Api.upload("/dictation/transcribe", fd);
+          Chat.add("user", "Диктант: " + result.original);
+          Chat.add("woody", "Исправленный текст:\n" + result.corrected + (result.changes?.length ? "\n\nИсправления:\n" + result.changes.map(c => `• «${c.before}» → «${c.after}»: ${c.reason}`).join("\n") : "\n\nОшибок для исправления не обнаружено."));
+        } catch (err) { Chat.add("woody", err.userMessage || err.message || "Не удалось обработать диктант.", true); }
+        finally { dictationStream?.getTracks().forEach(t => t.stop()); dictationStream = null; dictationRecorder = null; dictationBtn.disabled = false; dictationBtn.textContent = "🎙"; }
+      };
+      dictationRecorder.start(1000); dictationBtn.textContent = "■"; dictationBtn.title = "Остановить диктант";
+    } catch (err) { dictationStream?.getTracks().forEach(t => t.stop()); dictationStream = null; Chat.add("woody", err.message || "Нет доступа к микрофону.", true); }
+  };
+  const oldRenderModesMenu = renderModesMenu;
+  renderModesMenu = function(...args) { oldRenderModesMenu.apply(this,args); syncDictationButton(); };
+  syncDictationButton();
+
   $("btn-modes").onclick = (e) => { e.stopPropagation(); $("modes-menu").classList.toggle("hidden"); };
   document.addEventListener("click", (e) => { if (!e.target.closest("#modes-menu")) $("modes-menu").classList.add("hidden"); });
 
@@ -668,7 +719,7 @@
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});
 
   // --- проверка новой версии после деплоя ---
-  const LOCAL_VER = "0.7.4";
+  const LOCAL_VER = "0.7.5";
   async function checkUpdate() {
     try {
       const r = await fetch("/api/version", { cache: "no-store" });

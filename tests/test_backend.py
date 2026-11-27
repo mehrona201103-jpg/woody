@@ -361,3 +361,16 @@ def test_voice_settings_validated_and_tts_without_key(client, alik):
 def test_new_device_permissions_exist(client, alik):
     actions = {p["action"] for p in client.get("/api/permissions", headers=H(alik)).json()}
     assert {"location", "clipboard", "device.info", "share", "camera", "microphone"} <= actions
+
+
+def test_dictation_is_pro_only(client, alik):
+    response = client.post("/api/dictation/transcribe", headers=H(alik), files={"file": ("test.webm", b"audio", "audio/webm")})
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "pro_required"
+
+
+def test_group_notifications_endpoint_requires_session(client, alik):
+    assert client.get("/api/notifications").status_code == 403
+    response = client.get("/api/notifications", headers=H(alik))
+    assert response.status_code == 200
+    assert response.json()["unread"] == 0

@@ -265,3 +265,27 @@ class Feedback(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     text: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class TelegramBinding(Base):
+    """Подтверждённая привязка Telegram к аккаунту Woody."""
+    __tablename__ = "telegram_bindings"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    telegram_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    username: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    first_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    link_code: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class UserAdminState(Base):
+    """Административные ограничения аккаунта без изменения исходной схемы users."""
+    __tablename__ = "user_admin_states"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True, index=True)
+    blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    plan_access: Mapped[bool] = mapped_column(Boolean, default=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
